@@ -16,6 +16,12 @@ extern "C" {
 
 typedef struct CFABout CFABout;
 
+typedef struct {
+    int scuff;
+    int dent;
+    int exposed;
+} CFAPartDamage;
+
 typedef enum {
     CFA_PART_HEAD = 0,
     CFA_PART_TORSO,
@@ -54,6 +60,23 @@ typedef struct {
     double vy;
     double facing;
     double wallGap;
+    double leftFootX;
+    double leftFootY;
+    double rightFootX;
+    double rightFootY;
+    int swingFoot;
+    int pivotFoot;
+    int wallBraced;
+    double wallNormalX;
+    double wallNormalY;
+    int lastImpactPart;
+    int lastImpactDamage;
+    CFAPartDamage headDamage;
+    CFAPartDamage torsoDamage;
+    CFAPartDamage leftArmDamage;
+    CFAPartDamage rightArmDamage;
+    CFAPartDamage leftLegDamage;
+    CFAPartDamage rightLegDamage;
     char method[CFA_MAX_METHOD];
 } CFARobotSnapshot;
 

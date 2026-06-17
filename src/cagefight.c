@@ -21,8 +21,11 @@
 #define ARENA_RADIUS_M 3.00
 #define ROBOT_RADIUS_M 0.34
 #define ROBOT_MASS_KG 118.0
-#define FRICTION 0.72
+#define FRICTION 0.82
 #define CLINCH_BREAK_GAP_M 0.22
+#define FOOT_LEFT 0
+#define FOOT_RIGHT 1
+#define FOOT_NONE -1
 
 typedef enum {
     PART_HEAD = 0,
@@ -148,6 +151,8 @@ typedef struct {
 typedef struct {
     int integrity[PART_COUNT];
     int detached[PART_COUNT];
+    int scuff[PART_COUNT];
+    int dent[PART_COUNT];
     int processor;
     int shock;
     int stability;
@@ -164,6 +169,16 @@ typedef struct {
     double vx;
     double vy;
     double facing;
+    double foot_x[2];
+    double foot_y[2];
+    int swing_foot;
+    int pivot_foot;
+    int step_sequence;
+    int wall_braced;
+    double wall_nx;
+    double wall_ny;
+    int last_impact_part;
+    int last_impact_damage;
     char method[96];
 } RobotState;
 
@@ -848,6 +863,177 @@ static double leg_mobility_scale(const RobotState *robot)
     return clamp_double(scale, 0.10, 1.0);
 }
 
+static void facing_basis(const RobotState *robot, double *fx, double *fy,
+                         double *rx, double *ry)
+{
+    *fx = cos(robot->facing);
+    *fy = sin(robot->facing);
+    *rx = -sin(robot->facing);
+    *ry = cos(robot->facing);
+}
+
+static void clamp_contact_to_arena(double *x, double *y, double inset)
+{
+    double max_dist = ARENA_RADIUS_M - inset;
+    double dist = sqrt(*x * *x + *y * *y);
+
+    if (dist > max_dist && dist > 0.0001) {
+        *x = *x / dist * max_dist;
+        *y = *y / dist * max_dist;
+    }
+}
+
+static void foot_home(const RobotState *robot, int foot,
+                      double *x, double *y)
+{
+    double fx;
+    double fy;
+    double rx;
+    double ry;
+    double side = foot == FOOT_LEFT ? -1.0 : 1.0;
+    double fore = foot == FOOT_LEFT ? 0.035 : -0.035;
+
+    facing_basis(robot, &fx, &fy, &rx, &ry);
+    *x = robot->x + fx * fore + rx * side * 0.18;
+    *y = robot->y + fy * fore + ry * side * 0.18;
+    clamp_contact_to_arena(x, y, 0.12);
+}
+
+static void place_feet_from_body(RobotState *robot)
+{
+    foot_home(robot, FOOT_LEFT, &robot->foot_x[FOOT_LEFT],
+              &robot->foot_y[FOOT_LEFT]);
+    foot_home(robot, FOOT_RIGHT, &robot->foot_x[FOOT_RIGHT],
+              &robot->foot_y[FOOT_RIGHT]);
+    robot->swing_foot = FOOT_NONE;
+    robot->pivot_foot = FOOT_NONE;
+}
+
+static int next_step_foot(RobotState *robot)
+{
+    robot->step_sequence++;
+    return (robot->step_sequence & 1) ? FOOT_LEFT : FOOT_RIGHT;
+}
+
+static void set_step_footwork(RobotState *robot, CommandId command)
+{
+    switch (command) {
+    case CMD_STRAFE_L:
+        robot->swing_foot = FOOT_LEFT;
+        robot->pivot_foot = FOOT_RIGHT;
+        break;
+    case CMD_STRAFE_R:
+        robot->swing_foot = FOOT_RIGHT;
+        robot->pivot_foot = FOOT_LEFT;
+        break;
+    case CMD_CIRCLE_L:
+        robot->swing_foot = FOOT_RIGHT;
+        robot->pivot_foot = FOOT_LEFT;
+        break;
+    case CMD_CIRCLE_R:
+        robot->swing_foot = FOOT_LEFT;
+        robot->pivot_foot = FOOT_RIGHT;
+        break;
+    case CMD_ADVANCE:
+    case CMD_RETREAT:
+    case CMD_RESET:
+        robot->swing_foot = next_step_foot(robot);
+        robot->pivot_foot = robot->swing_foot == FOOT_LEFT ? FOOT_RIGHT : FOOT_LEFT;
+        break;
+    default:
+        break;
+    }
+}
+
+static void set_attack_footwork(RobotState *robot, CommandId command)
+{
+    switch (command) {
+    case CMD_LOW_KICK:
+    case CMD_HIGH_KICK:
+    case CMD_KNEE:
+    case CMD_STOMP:
+        robot->swing_foot = FOOT_RIGHT;
+        robot->pivot_foot = FOOT_LEFT;
+        break;
+    case CMD_R_CROSS:
+    case CMD_R_HOOK:
+    case CMD_UPPERCUT:
+        robot->swing_foot = FOOT_NONE;
+        robot->pivot_foot = FOOT_RIGHT;
+        break;
+    case CMD_L_HOOK:
+    case CMD_ELBOW:
+        robot->swing_foot = FOOT_NONE;
+        robot->pivot_foot = FOOT_LEFT;
+        break;
+    case CMD_CLINCH:
+    case CMD_THROW:
+        robot->swing_foot = FOOT_NONE;
+        robot->pivot_foot = FOOT_NONE;
+        break;
+    default:
+        break;
+    }
+}
+
+static void update_robot_footwork(RobotState *robot)
+{
+    int foot;
+    int support = robot->pivot_foot;
+    double home_x[2];
+    double home_y[2];
+
+    foot_home(robot, FOOT_LEFT, &home_x[FOOT_LEFT], &home_y[FOOT_LEFT]);
+    foot_home(robot, FOOT_RIGHT, &home_x[FOOT_RIGHT], &home_y[FOOT_RIGHT]);
+
+    if (robot->down || !mode_available(robot, USE_ANY_LEG)) {
+        for (foot = 0; foot < 2; foot++) {
+            robot->foot_x[foot] += (home_x[foot] - robot->foot_x[foot]) * 0.65;
+            robot->foot_y[foot] += (home_y[foot] - robot->foot_y[foot]) * 0.65;
+            clamp_contact_to_arena(&robot->foot_x[foot], &robot->foot_y[foot],
+                                   0.16);
+        }
+        robot->swing_foot = FOOT_NONE;
+        return;
+    }
+
+    if (support < 0 || support > 1 || robot->detached[PART_L_LEG + support]) {
+        support = robot->swing_foot == FOOT_LEFT ? FOOT_RIGHT : FOOT_LEFT;
+        if (support < 0 || support > 1 || robot->detached[PART_L_LEG + support]) {
+            support = FOOT_NONE;
+        }
+    }
+
+    for (foot = 0; foot < 2; foot++) {
+        double dx = home_x[foot] - robot->foot_x[foot];
+        double dy = home_y[foot] - robot->foot_y[foot];
+        double distance = sqrt(dx * dx + dy * dy);
+
+        if (robot->detached[PART_L_LEG + foot]) {
+            robot->foot_x[foot] = home_x[foot];
+            robot->foot_y[foot] = home_y[foot];
+            continue;
+        }
+
+        if (foot == robot->swing_foot) {
+            robot->foot_x[foot] = home_x[foot];
+            robot->foot_y[foot] = home_y[foot];
+        } else if (foot == support && distance < 0.54) {
+            /* Keep the pivot contact planted unless the hip has overreached. */
+        } else if (distance > 0.44) {
+            robot->swing_foot = foot;
+            robot->foot_x[foot] = home_x[foot];
+            robot->foot_y[foot] = home_y[foot];
+        } else {
+            robot->foot_x[foot] += dx * 0.18;
+            robot->foot_y[foot] += dy * 0.18;
+        }
+
+        clamp_contact_to_arena(&robot->foot_x[foot], &robot->foot_y[foot],
+                               0.12);
+    }
+}
+
 static void init_robot(RobotState *robot, int side)
 {
     int i;
@@ -856,6 +1042,8 @@ static void init_robot(RobotState *robot, int side)
     for (i = 0; i < PART_COUNT; i++) {
         robot->integrity[i] = part_initial[i];
         robot->detached[i] = 0;
+        robot->scuff[i] = 0;
+        robot->dent[i] = 0;
     }
     robot->processor = 100;
     robot->shock = 0;
@@ -864,6 +1052,13 @@ static void init_robot(RobotState *robot, int side)
     robot->x = side == 0 ? -1.15 : 1.15;
     robot->y = side == 0 ? -0.20 : 0.20;
     robot->facing = side == 0 ? 0.0 : PI;
+    robot->wall_braced = 0;
+    robot->wall_nx = side == 0 ? -1.0 : 1.0;
+    robot->wall_ny = 0.0;
+    robot->step_sequence = side;
+    place_feet_from_body(robot);
+    robot->last_impact_part = PART_INVALID;
+    robot->last_impact_damage = 0;
     robot->method[0] = '\0';
 }
 
@@ -883,6 +1078,11 @@ static void recover_robot(RobotState *robot)
     robot->retreating = 0;
     robot->advancing = 0;
     robot->circling = 0;
+    robot->swing_foot = FOOT_NONE;
+    robot->pivot_foot = FOOT_NONE;
+    robot->wall_braced = 0;
+    robot->last_impact_part = PART_INVALID;
+    robot->last_impact_damage = 0;
 
     if (robot->heat > 0) {
         robot->heat -= 4;
@@ -948,6 +1148,8 @@ static void detach_if_needed(RobotState *robot, BodyPart part, char *out,
 {
     if (is_limb(part) && !robot->detached[part] && robot->integrity[part] <= 0) {
         robot->detached[part] = 1;
+        robot->scuff[part] = 100;
+        robot->dent[part] = 100;
         robot->shock += 14;
         robot->stability -= 24;
         if (robot->stability < 0) {
@@ -955,6 +1157,31 @@ static void detach_if_needed(RobotState *robot, BodyPart part, char *out,
         }
         append_text(out, out_size, " %s detached.", part_name(part));
     }
+}
+
+static void record_surface_damage(RobotState *robot, BodyPart part,
+                                  int raw_damage, int net_damage)
+{
+    int scuff_gain;
+    int dent_gain;
+
+    if (part < 0 || part >= PART_COUNT) {
+        return;
+    }
+
+    scuff_gain = clamp_int(raw_damage / 2 + net_damage, 1, 30);
+    dent_gain = 0;
+    if (raw_damage >= 18 || net_damage >= 12) {
+        dent_gain = clamp_int((raw_damage - 10) / 4 + net_damage / 8, 1, 22);
+    }
+    if (raw_damage >= 30) {
+        dent_gain += 6;
+    }
+
+    robot->scuff[part] = clamp_int(robot->scuff[part] + scuff_gain, 0, 100);
+    robot->dent[part] = clamp_int(robot->dent[part] + dent_gain, 0, 100);
+    robot->last_impact_part = part;
+    robot->last_impact_damage = clamp_int(raw_damage + net_damage, 0, 160);
 }
 
 static BodyPart select_target(const RobotState *defender, Command command,
@@ -1163,9 +1390,9 @@ static void fall_down(RobotState *robot, const char *reason, char *out,
 {
     if (!robot->down) {
         robot->down = 1;
-        robot->down_ticks = 2;
-        robot->stability = clamp_int(robot->stability - 18, 0, max_stability(robot));
-        robot->shock = clamp_int(robot->shock + 6, 0, 140);
+        robot->down_ticks = 3;
+        robot->stability = clamp_int(robot->stability - 24, 0, max_stability(robot));
+        robot->shock = clamp_int(robot->shock + 8, 0, 140);
         append_text(out, out_size, " falls backward by %s.", reason);
     }
 }
@@ -1199,6 +1426,7 @@ static void stand_robot(Fight *fight, int side, char *out, size_t out_size)
     if (roll <= chance) {
         robot->down = 0;
         robot->stability = clamp_int(robot->stability + 30, 0, max_stability(robot));
+        place_feet_from_body(robot);
         append_text(out, out_size, "R%d STAND recovers upright (roll %d/%d). ",
                     side + 1, roll, chance);
     } else {
@@ -1250,6 +1478,7 @@ static void apply_motion_command(Fight *fight, int side, const Intent *intent,
     ty = nx;
     scale = leg_mobility_scale(robot);
     impulse = intent->spec->move_impulse_m * scale;
+    set_step_footwork(robot, intent->command.id);
 
     switch (intent->command.id) {
     case CMD_ADVANCE:
@@ -1304,28 +1533,48 @@ static void resolve_arena_contact(RobotState *robot, int side, char *out,
                                   size_t out_size)
 {
     double dist = sqrt(robot->x * robot->x + robot->y * robot->y);
-    double max_dist = ARENA_RADIUS_M - ROBOT_RADIUS_M;
+    double max_dist = ARENA_RADIUS_M - ROBOT_RADIUS_M - (robot->down ? 0.18 : 0.0);
 
     if (dist > max_dist) {
         double nx = dist < 0.0001 ? (side == 0 ? -1.0 : 1.0) : robot->x / dist;
         double ny = dist < 0.0001 ? 0.0 : robot->y / dist;
         double outward_v = robot->vx * nx + robot->vy * ny;
+        double restitution = robot->down ? 1.0 : 1.35;
 
         robot->x = nx * max_dist;
         robot->y = ny * max_dist;
+        robot->wall_nx = nx;
+        robot->wall_ny = ny;
+        robot->wall_braced = robot->down ? 1 : robot->wall_braced;
 
         if (outward_v > 0.0) {
-            robot->vx -= nx * outward_v * 1.35;
-            robot->vy -= ny * outward_v * 1.35;
+            robot->vx -= nx * outward_v * restitution;
+            robot->vy -= ny * outward_v * restitution;
             if (outward_v > 0.22) {
-                int impact = clamp_int((int)(outward_v * 30.0), 1, 12);
+                int impact = clamp_int((int)(outward_v * 34.0), 1, 16);
                 robot->shock = clamp_int(robot->shock + impact, 0, 140);
                 robot->stability = clamp_int(robot->stability - impact, 0,
                                              max_stability(robot));
                 append_text(out, out_size, "R%d cage wall impact %.2fm/t. ",
                             side + 1, outward_v);
+                if (!robot->down && outward_v > 0.34 &&
+                    (robot->stability < 42 || outward_v > 0.52)) {
+                    robot->vx -= nx * outward_v * 0.25;
+                    robot->vy -= ny * outward_v * 0.25;
+                    fall_down(robot, "cage wall impact", out, out_size);
+                    robot->wall_braced = 1;
+                    robot->wall_nx = nx;
+                    robot->wall_ny = ny;
+                }
             }
         }
+    }
+
+    dist = sqrt(robot->x * robot->x + robot->y * robot->y);
+    if (robot->down && dist > max_dist - 0.05 && dist > 0.0001) {
+        robot->wall_braced = 1;
+        robot->wall_nx = robot->x / dist;
+        robot->wall_ny = robot->y / dist;
     }
 }
 
@@ -1366,7 +1615,7 @@ static void resolve_robot_contact(Fight *fight, char *out, size_t out_size)
             b->vy += ny * impulse;
 
             if (!fight->clinch && rel > 0.20) {
-                int impact = clamp_int((int)(rel * 24.0), 1, 10);
+                int impact = clamp_int((int)(rel * 30.0), 1, 16);
                 a->shock = clamp_int(a->shock + impact / 2, 0, 140);
                 b->shock = clamp_int(b->shock + impact / 2, 0, 140);
                 a->stability = clamp_int(a->stability - impact / 2, 0,
@@ -1374,6 +1623,19 @@ static void resolve_robot_contact(Fight *fight, char *out, size_t out_size)
                 b->stability = clamp_int(b->stability - impact / 2, 0,
                                          max_stability(b));
                 append_text(out, out_size, "hard-body collision rel %.2fm/t. ", rel);
+                if (rel > 0.42) {
+                    double shove = clamp_double(rel * 0.22, 0.04, 0.16);
+                    if (!a->down && (a->stability < 35 || rel > 0.72)) {
+                        a->vx -= nx * shove;
+                        a->vy -= ny * shove;
+                        fall_down(a, "hard-body collision", out, out_size);
+                    }
+                    if (!b->down && (b->stability < 35 || rel > 0.72)) {
+                        b->vx += nx * shove;
+                        b->vy += ny * shove;
+                        fall_down(b, "hard-body collision", out, out_size);
+                    }
+                }
             }
         }
     }
@@ -1387,8 +1649,8 @@ static void physics_step(Fight *fight, char *out, size_t out_size)
     for (i = 0; i < 2; i++) {
         RobotState *robot = &fight->robot[i];
         if (robot->down) {
-            robot->vx *= 0.58;
-            robot->vy *= 0.58;
+            robot->vx *= 0.68;
+            robot->vy *= 0.68;
         }
         robot->x += robot->vx;
         robot->y += robot->vy;
@@ -1424,6 +1686,7 @@ static void physics_step(Fight *fight, char *out, size_t out_size)
         if (fabs(fight->robot[i].vy) < 0.002) {
             fight->robot[i].vy = 0.0;
         }
+        update_robot_footwork(&fight->robot[i]);
     }
 }
 
@@ -1441,6 +1704,8 @@ static void apply_damage(Fight *fight, int defender_side, BodyPart target,
         if (shield != PART_INVALID && (target == PART_HEAD || target == PART_TORSO)) {
             int shield_damage = clamp_int(raw_damage / 5, 1, 12);
             defender->integrity[shield] -= shield_damage;
+            record_surface_damage(defender, shield, raw_damage / 2,
+                                  shield_damage);
             append_text(out, out_size, " guard shunts %d into %s;",
                         shield_damage, part_name(shield));
             detach_if_needed(defender, shield, out, out_size);
@@ -1449,6 +1714,7 @@ static void apply_damage(Fight *fight, int defender_side, BodyPart target,
 
     net_damage = clamp_int(net_damage, guarded ? 0 : 1, 80);
     defender->integrity[target] -= net_damage;
+    record_surface_damage(defender, target, raw_damage, net_damage);
 
     if (target == PART_HEAD) {
         int processor_loss = net_damage * 3 / 4;
@@ -1491,23 +1757,33 @@ static void apply_knockback(Fight *fight, int attacker_side, BodyPart target,
     double nx;
     double ny;
     double dv;
+    double instability;
     int fall_pressure;
     int threshold;
 
     vector_to_opponent(fight, attacker_side, &nx, &ny);
-    dv = spec->strike_impulse_m * ((double)raw_damage / 20.0);
+    instability = clamp_double((100.0 - (double)defender->stability) / 100.0,
+                               0.0, 0.85);
+    dv = spec->strike_impulse_m * ((double)raw_damage / 16.0) *
+         (1.0 + instability * 0.22);
 
     if (target == PART_HEAD || target == PART_TORSO) {
-        dv *= 1.12;
+        dv *= 1.26;
+    }
+    if (target == PART_L_LEG || target == PART_R_LEG) {
+        dv *= 1.10;
+    }
+    if (spec->id == CMD_HIGH_KICK || spec->id == CMD_THROW) {
+        dv *= 1.18;
     }
     if (defender->down) {
-        dv *= 0.40;
+        dv *= 0.42;
     }
 
     defender->vx += nx * dv;
     defender->vy += ny * dv;
-    attacker->vx -= nx * dv * 0.20;
-    attacker->vy -= ny * dv * 0.20;
+    attacker->vx -= nx * dv * 0.28;
+    attacker->vy -= ny * dv * 0.28;
 
     if (dv > 0.05) {
         append_text(out, out_size, " impulse %.2fm/t", dv);
@@ -1517,21 +1793,32 @@ static void apply_knockback(Fight *fight, int attacker_side, BodyPart target,
         return;
     }
 
-    fall_pressure = raw_damage + (int)(spec->strike_impulse_m * 115.0) +
-                    (100 - defender->stability) / 2;
+    fall_pressure = raw_damage + (int)(spec->strike_impulse_m * 145.0) +
+                    (100 - defender->stability) * 2 / 3 +
+                    (int)(dv * 70.0);
     if (target == PART_HEAD || target == PART_TORSO) {
-        fall_pressure += 8;
-    }
-    if (target == PART_L_LEG || target == PART_R_LEG) {
         fall_pressure += 14;
     }
+    if (target == PART_L_LEG || target == PART_R_LEG) {
+        fall_pressure += 18;
+    }
+    if (spec->id == CMD_HIGH_KICK || spec->id == CMD_KNEE) {
+        fall_pressure += 16;
+    }
     if (fight->clinch && spec->id == CMD_THROW) {
-        fall_pressure += 38;
+        fall_pressure += 48;
     }
 
-    threshold = 92 + defender->stability / 4;
-    if (defender->stability < 18 ||
-        fall_pressure + rng_range(&fight->rng, 0, 38) > threshold) {
+    threshold = 70 + defender->stability / 5;
+    if (raw_damage >= 24 && (target == PART_HEAD || target == PART_TORSO)) {
+        threshold -= 8;
+    }
+    if (defender->stability < 26 ||
+        fall_pressure + rng_range(&fight->rng, 0, 32) > threshold) {
+        double fall_impulse = clamp_double(dv * 0.55 + instability * 0.10,
+                                           0.06, 0.26);
+        defender->vx += nx * fall_impulse;
+        defender->vy += ny * fall_impulse;
         fall_down(defender, spec->name, out, out_size);
         fight->clinch = 0;
     }
@@ -1614,6 +1901,7 @@ static void resolve_attack(Fight *fight, int attacker_side, const Intent *intent
     attacker->heat = clamp_int(attacker->heat + spec->heat_cost, 0, 170);
     attacker->stability = clamp_int(attacker->stability - spec->stability_cost,
                                     0, max_stability(attacker));
+    set_attack_footwork(attacker, intent->command.id);
     attacker->vx += cos(attacker->facing) * spec->move_impulse_m;
     attacker->vy += sin(attacker->facing) * spec->move_impulse_m;
 
@@ -1911,6 +2199,26 @@ static int distance_band(const Fight *fight)
     return 2;
 }
 
+static void copy_part_damage(CFAPartDamage *snapshot,
+                             const RobotState *robot,
+                             BodyPart part)
+{
+    int lost;
+
+    memset(snapshot, 0, sizeof(*snapshot));
+    if (part < 0 || part >= PART_COUNT) {
+        return;
+    }
+
+    lost = part_initial[part] - robot->integrity[part];
+    snapshot->scuff = clamp_int(robot->scuff[part], 0, 100);
+    snapshot->dent = clamp_int(robot->dent[part], 0, 100);
+    snapshot->exposed = clamp_int(lost * 100 / part_initial[part], 0, 100);
+    if (robot->detached[part]) {
+        snapshot->exposed = 100;
+    }
+}
+
 static void copy_robot_snapshot(CFARobotSnapshot *snapshot,
                                 const RobotState *robot)
 {
@@ -1942,6 +2250,23 @@ static void copy_robot_snapshot(CFARobotSnapshot *snapshot,
     snapshot->vy = robot->vy;
     snapshot->facing = robot->facing;
     snapshot->wallGap = wall_gap(robot);
+    snapshot->leftFootX = robot->foot_x[FOOT_LEFT];
+    snapshot->leftFootY = robot->foot_y[FOOT_LEFT];
+    snapshot->rightFootX = robot->foot_x[FOOT_RIGHT];
+    snapshot->rightFootY = robot->foot_y[FOOT_RIGHT];
+    snapshot->swingFoot = robot->swing_foot;
+    snapshot->pivotFoot = robot->pivot_foot;
+    snapshot->wallBraced = robot->wall_braced;
+    snapshot->wallNormalX = robot->wall_nx;
+    snapshot->wallNormalY = robot->wall_ny;
+    snapshot->lastImpactPart = robot->last_impact_part;
+    snapshot->lastImpactDamage = robot->last_impact_damage;
+    copy_part_damage(&snapshot->headDamage, robot, PART_HEAD);
+    copy_part_damage(&snapshot->torsoDamage, robot, PART_TORSO);
+    copy_part_damage(&snapshot->leftArmDamage, robot, PART_L_ARM);
+    copy_part_damage(&snapshot->rightArmDamage, robot, PART_R_ARM);
+    copy_part_damage(&snapshot->leftLegDamage, robot, PART_L_LEG);
+    copy_part_damage(&snapshot->rightLegDamage, robot, PART_R_LEG);
     copy_text(snapshot->method, sizeof(snapshot->method), robot->method);
 }
 
