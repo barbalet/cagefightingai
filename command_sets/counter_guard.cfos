@@ -1,0 +1,13 @@
+name: Counter Guard
+
+# Guard first, force misses, then counter with efficient linear attacks.
+GUARD
+RETREAT
+L_JAB HEAD
+GUARD
+R_CROSS HEAD
+RETREAT
+LOW_KICK R_LEG
+GUARD
+R_CROSS HEAD
+RESET

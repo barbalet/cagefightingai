@@ -1,0 +1,14 @@
+name: Clinch Driver
+
+# Compress range, attach, and cycle torso/head damage at distance zero.
+ADVANCE
+ADVANCE
+CLINCH TORSO
+KNEE TORSO
+ELBOW HEAD
+THROW TORSO
+ADVANCE
+CLINCH TORSO
+UPPERCUT HEAD
+KNEE HEAD
+GUARD

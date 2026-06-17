@@ -1,0 +1,14 @@
+name: Headhunter
+
+# Outside entry, then repeated processor attacks.
+ADVANCE
+L_JAB HEAD
+R_CROSS HEAD
+ADVANCE
+L_HOOK HEAD
+R_HOOK HEAD
+UPPERCUT HEAD
+GUARD
+R_CROSS HEAD
+HIGH_KICK HEAD
+RESET

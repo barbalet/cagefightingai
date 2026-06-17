@@ -1,0 +1,15 @@
+name: Limb Breaker
+
+# Remove mobility and punching options before attacking the head.
+ADVANCE
+LOW_KICK L_LEG
+LOW_KICK R_LEG
+GUARD
+STOMP L_LEG
+R_CROSS R_ARM
+L_HOOK L_ARM
+ADVANCE
+LOW_KICK R_LEG
+STOMP L_LEG
+R_CROSS HEAD
+RESET
