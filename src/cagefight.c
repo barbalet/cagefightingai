@@ -927,6 +927,7 @@ static void resolve_attack(Fight *fight, int attacker_side, const Intent *intent
     evaluate_defeat(defender);
 }
 
+#ifndef CFA_NO_CLI_MAIN
 static void print_status(const char *label, const RobotState *robot)
 {
     printf("%s H%3d P%3d S%3d T%3d LA%3d RA%3d LL%3d RL%3d heat%3d shock%3d",
@@ -1093,6 +1094,7 @@ static BoutResult run_bout(const Program *left, const Program *right,
 
     return result;
 }
+#endif
 
 static void copy_robot_snapshot(CFARobotSnapshot *snapshot,
                                 const RobotState *robot)
