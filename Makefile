@@ -1,5 +1,6 @@
 CC ?= cc
 CFLAGS ?= -std=c99 -Wall -Wextra -pedantic -O2
+LDLIBS ?= -lm
 
 BIN := build/cagefight
 SRC := src/cagefight.c
@@ -13,7 +14,7 @@ COMMAND_SETS := command_sets/headhunter.cfos \
 all: $(BIN)
 
 $(BIN): $(SRC) | build
-	$(CC) $(CFLAGS) -o $@ $(SRC)
+	$(CC) $(CFLAGS) -o $@ $(SRC) $(LDLIBS)
 
 build:
 	mkdir -p build
