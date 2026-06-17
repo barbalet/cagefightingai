@@ -1365,6 +1365,7 @@ const char *cfa_command_name(int command_id)
     return move_specs[command_id].name;
 }
 
+#ifndef CFA_NO_CLI_MAIN
 static void print_usage(const char *argv0)
 {
     printf("Usage:\n");
@@ -1495,7 +1496,6 @@ static int run_tournament(int argc, char **argv)
     return 0;
 }
 
-#ifndef CFA_NO_CLI_MAIN
 int main(int argc, char **argv)
 {
     Program left;
