@@ -6,6 +6,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "cagefight.h"
+
+
 #define MAX_RULES 256
 #define MAX_NAME 80
 #define MAX_LINE 256
@@ -1698,6 +1701,7 @@ static void resolve_attack(Fight *fight, int attacker_side, const Intent *intent
     evaluate_defeat(defender);
 }
 
+#ifndef CFA_NO_CLI_MAIN
 static void print_status(const char *label, const RobotState *robot)
 {
     printf("%s pos(%+.2f,%+.2f) v(%+.2f,%+.2f) H%3d P%3d S%3d T%3d LA%3d RA%3d LL%3d RL%3d heat%3d shock%3d wall%.2f",
@@ -1877,7 +1881,330 @@ static BoutResult run_bout(const Program *left, const Program *right,
 
     return result;
 }
+#endif
 
+struct CFABout {
+    Program left;
+    Program right;
+    Fight fight;
+    uint32_t seed;
+    int turn;
+    int finished;
+    int winner;
+    int score[2];
+    size_t cursor[2];
+    char result_method[CFA_MAX_METHOD];
+    Intent last_intent[2];
+    char last_event[CFA_MAX_EVENT];
+};
+
+static int distance_band(const Fight *fight)
+{
+    double gap = surface_gap(fight);
+
+    if (fight->clinch || gap < 0.10) {
+        return 0;
+    }
+    if (gap < 0.80) {
+        return 1;
+    }
+    return 2;
+}
+
+static void copy_robot_snapshot(CFARobotSnapshot *snapshot,
+                                const RobotState *robot)
+{
+    memset(snapshot, 0, sizeof(*snapshot));
+    snapshot->head = robot->integrity[PART_HEAD];
+    snapshot->torso = robot->integrity[PART_TORSO];
+    snapshot->leftArm = robot->integrity[PART_L_ARM];
+    snapshot->rightArm = robot->integrity[PART_R_ARM];
+    snapshot->leftLeg = robot->integrity[PART_L_LEG];
+    snapshot->rightLeg = robot->integrity[PART_R_LEG];
+    snapshot->processor = robot->processor;
+    snapshot->shock = robot->shock;
+    snapshot->stability = robot->stability;
+    snapshot->heat = robot->heat;
+    snapshot->guarding = robot->guard;
+    snapshot->retreating = robot->retreating;
+    snapshot->advancing = robot->advancing;
+    snapshot->circling = robot->circling;
+    snapshot->down = robot->down;
+    snapshot->downTicks = robot->down_ticks;
+    snapshot->defeated = robot->defeated;
+    snapshot->leftArmDetached = robot->detached[PART_L_ARM];
+    snapshot->rightArmDetached = robot->detached[PART_R_ARM];
+    snapshot->leftLegDetached = robot->detached[PART_L_LEG];
+    snapshot->rightLegDetached = robot->detached[PART_R_LEG];
+    snapshot->x = robot->x;
+    snapshot->y = robot->y;
+    snapshot->vx = robot->vx;
+    snapshot->vy = robot->vy;
+    snapshot->facing = robot->facing;
+    snapshot->wallGap = wall_gap(robot);
+    copy_text(snapshot->method, sizeof(snapshot->method), robot->method);
+}
+
+static void finish_bout(CFABout *bout)
+{
+    bout->finished = 1;
+    bout->score[0] = structural_score(&bout->fight.robot[0]);
+    bout->score[1] = structural_score(&bout->fight.robot[1]);
+
+    if (bout->fight.robot[0].defeated || bout->fight.robot[1].defeated) {
+        if (bout->fight.robot[0].defeated && bout->fight.robot[1].defeated) {
+            bout->winner = -1;
+            copy_text(bout->result_method, sizeof(bout->result_method),
+                      "double stoppage");
+        } else if (bout->fight.robot[0].defeated) {
+            bout->winner = 1;
+            copy_text(bout->result_method, sizeof(bout->result_method),
+                      bout->fight.robot[0].method);
+        } else {
+            bout->winner = 0;
+            copy_text(bout->result_method, sizeof(bout->result_method),
+                      bout->fight.robot[1].method);
+        }
+        return;
+    }
+
+    if (bout->score[0] > bout->score[1]) {
+        bout->winner = 0;
+        copy_text(bout->result_method, sizeof(bout->result_method),
+                  "decision by remaining structure and posture");
+    } else if (bout->score[1] > bout->score[0]) {
+        bout->winner = 1;
+        copy_text(bout->result_method, sizeof(bout->result_method),
+                  "decision by remaining structure and posture");
+    } else {
+        bout->winner = -1;
+        copy_text(bout->result_method, sizeof(bout->result_method),
+                  "draw by equal score");
+    }
+}
+
+static void fill_snapshot(const CFABout *bout, CFATurnSnapshot *snapshot)
+{
+    memset(snapshot, 0, sizeof(*snapshot));
+    snapshot->turn = bout->turn;
+    snapshot->distance = distance_band(&bout->fight);
+    snapshot->gap = surface_gap(&bout->fight);
+    snapshot->centerDistance = center_distance(&bout->fight);
+    snapshot->arenaRadius = ARENA_RADIUS_M;
+    snapshot->robotRadius = ROBOT_RADIUS_M;
+    snapshot->clinch = bout->fight.clinch;
+    snapshot->finished = bout->finished;
+    snapshot->winner = bout->winner;
+    snapshot->leftScore = bout->score[0];
+    snapshot->rightScore = bout->score[1];
+    snapshot->leftTarget = PART_INVALID;
+    snapshot->rightTarget = PART_INVALID;
+
+    copy_text(snapshot->leftName, sizeof(snapshot->leftName), bout->left.name);
+    copy_text(snapshot->rightName, sizeof(snapshot->rightName), bout->right.name);
+    copy_text(snapshot->event, sizeof(snapshot->event), bout->last_event);
+    copy_text(snapshot->resultMethod, sizeof(snapshot->resultMethod),
+              bout->result_method);
+
+    if (bout->last_intent[0].spec != NULL) {
+        snapshot->leftCommandId = bout->last_intent[0].command.id;
+        snapshot->leftTarget = bout->last_intent[0].command.target;
+        copy_text(snapshot->leftCommand, sizeof(snapshot->leftCommand),
+                  bout->last_intent[0].spec->name);
+    } else {
+        snapshot->leftCommandId = CMD_INVALID;
+        snapshot->leftCommand[0] = '\0';
+    }
+
+    if (bout->last_intent[1].spec != NULL) {
+        snapshot->rightCommandId = bout->last_intent[1].command.id;
+        snapshot->rightTarget = bout->last_intent[1].command.target;
+        copy_text(snapshot->rightCommand, sizeof(snapshot->rightCommand),
+                  bout->last_intent[1].spec->name);
+    } else {
+        snapshot->rightCommandId = CMD_INVALID;
+        snapshot->rightCommand[0] = '\0';
+    }
+
+    copy_robot_snapshot(&snapshot->leftRobot, &bout->fight.robot[0]);
+    copy_robot_snapshot(&snapshot->rightRobot, &bout->fight.robot[1]);
+}
+
+CFABout *cfa_bout_create_from_files(const char *left_path,
+                                    const char *right_path,
+                                    uint32_t seed,
+                                    char *error,
+                                    size_t error_size)
+{
+    CFABout *bout = (CFABout *)calloc(1, sizeof(*bout));
+
+    if (bout == NULL) {
+        snprintf(error, error_size, "unable to allocate CFA bout");
+        return NULL;
+    }
+
+    if (!load_program(left_path, &bout->left, error, error_size)) {
+        free(bout);
+        return NULL;
+    }
+    if (!load_program(right_path, &bout->right, error, error_size)) {
+        free(bout);
+        return NULL;
+    }
+
+    cfa_bout_restart(bout, seed);
+    return bout;
+}
+
+void cfa_bout_destroy(CFABout *bout)
+{
+    free(bout);
+}
+
+void cfa_bout_restart(CFABout *bout, uint32_t seed)
+{
+    if (bout == NULL) {
+        return;
+    }
+
+    bout->seed = seed == 0 ? 1u : seed;
+    init_fight(&bout->fight, bout->seed);
+    bout->turn = 0;
+    bout->finished = 0;
+    bout->winner = -2;
+    bout->score[0] = structural_score(&bout->fight.robot[0]);
+    bout->score[1] = structural_score(&bout->fight.robot[1]);
+    bout->cursor[0] = 0;
+    bout->cursor[1] = 0;
+    bout->result_method[0] = '\0';
+    memset(bout->last_intent, 0, sizeof(bout->last_intent));
+    snprintf(bout->last_event, sizeof(bout->last_event),
+             "Bout loaded: %s versus %s.", bout->left.name, bout->right.name);
+}
+
+int cfa_bout_step(CFABout *bout, CFATurnSnapshot *snapshot)
+{
+    Intent intent[2];
+    char event[CFA_MAX_EVENT];
+    int attack_order[2] = {0, 1};
+    int score_a;
+    int score_b;
+
+    if (bout == NULL || snapshot == NULL) {
+        return 0;
+    }
+
+    if (bout->finished) {
+        fill_snapshot(bout, snapshot);
+        return 0;
+    }
+
+    event[0] = '\0';
+    bout->turn++;
+
+    recover_robot(&bout->fight.robot[0]);
+    recover_robot(&bout->fight.robot[1]);
+
+    intent[0] = build_intent(&bout->left, &bout->fight, 0,
+                             &bout->cursor[0], event, sizeof(event));
+    intent[1] = build_intent(&bout->right, &bout->fight, 1,
+                             &bout->cursor[1], event, sizeof(event));
+
+    if (intent[0].note[0] != '\0') {
+        append_text(event, sizeof(event), "R1 %s. ", intent[0].note);
+    }
+    if (intent[1].note[0] != '\0') {
+        append_text(event, sizeof(event), "R2 %s. ", intent[1].note);
+    }
+
+    apply_motion_command(&bout->fight, 0, &intent[0], event, sizeof(event));
+    apply_motion_command(&bout->fight, 1, &intent[1], event, sizeof(event));
+    physics_step(&bout->fight, event, sizeof(event));
+
+    if (intent[0].active && intent[1].active) {
+        score_a = intent[0].spec->speed + bout->fight.robot[0].stability / 20 -
+                  bout->fight.robot[0].heat / 30 +
+                  rng_range(&bout->fight.rng, 0, 3);
+        score_b = intent[1].spec->speed + bout->fight.robot[1].stability / 20 -
+                  bout->fight.robot[1].heat / 30 +
+                  rng_range(&bout->fight.rng, 0, 3);
+        if (score_b > score_a) {
+            attack_order[0] = 1;
+            attack_order[1] = 0;
+        }
+    }
+
+    if (intent[attack_order[0]].active) {
+        resolve_attack(&bout->fight, attack_order[0],
+                       &intent[attack_order[0]], event, sizeof(event));
+    }
+    if (intent[attack_order[1]].active) {
+        resolve_attack(&bout->fight, attack_order[1],
+                       &intent[attack_order[1]], event, sizeof(event));
+    }
+    physics_step(&bout->fight, event, sizeof(event));
+
+    bout->last_intent[0] = intent[0];
+    bout->last_intent[1] = intent[1];
+    if (event[0] == '\0') {
+        snprintf(event, sizeof(event), "Bodies coast under friction.");
+    }
+    copy_text(bout->last_event, sizeof(bout->last_event), event);
+    bout->score[0] = structural_score(&bout->fight.robot[0]);
+    bout->score[1] = structural_score(&bout->fight.robot[1]);
+
+    if (bout->fight.robot[0].defeated || bout->fight.robot[1].defeated ||
+        bout->turn >= MAX_TURNS) {
+        finish_bout(bout);
+    }
+
+    fill_snapshot(bout, snapshot);
+    return 1;
+}
+
+void cfa_bout_get_snapshot(const CFABout *bout, CFATurnSnapshot *snapshot)
+{
+    if (bout == NULL || snapshot == NULL) {
+        return;
+    }
+    fill_snapshot(bout, snapshot);
+}
+
+int cfa_bout_is_finished(const CFABout *bout)
+{
+    return bout == NULL ? 1 : bout->finished;
+}
+
+const char *cfa_part_name(int part)
+{
+    return part_name((BodyPart)part);
+}
+
+int cfa_part_initial(int part)
+{
+    if (part < 0 || part >= PART_COUNT) {
+        return 0;
+    }
+    return part_initial[part];
+}
+
+int cfa_part_armor(int part)
+{
+    if (part < 0 || part >= PART_COUNT) {
+        return 0;
+    }
+    return part_armor[part];
+}
+
+const char *cfa_command_name(int command_id)
+{
+    if (command_id < 0 || command_id >= CMD_COUNT) {
+        return "INVALID";
+    }
+    return move_specs[command_id].name;
+}
+
+#ifndef CFA_NO_CLI_MAIN
 static void print_usage(const char *argv0)
 {
     printf("Usage:\n");
@@ -2055,3 +2382,4 @@ int main(int argc, char **argv)
     (void)run_bout(&left, &right, seed, 1);
     return 0;
 }
+#endif

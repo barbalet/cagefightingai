@@ -9,10 +9,10 @@ extern "C" {
 #endif
 
 #define CFA_MAX_NAME 80
-#define CFA_MAX_EVENT 1024
+#define CFA_MAX_EVENT 1536
 #define CFA_MAX_METHOD 96
 #define CFA_MAX_COMMAND_NAME 24
-#define CFA_MAX_TURNS 160
+#define CFA_MAX_TURNS 240
 
 typedef struct CFABout CFABout;
 
@@ -40,17 +40,30 @@ typedef struct {
     int guarding;
     int retreating;
     int advancing;
+    int circling;
+    int down;
+    int downTicks;
     int defeated;
     int leftArmDetached;
     int rightArmDetached;
     int leftLegDetached;
     int rightLegDetached;
+    double x;
+    double y;
+    double vx;
+    double vy;
+    double facing;
+    double wallGap;
     char method[CFA_MAX_METHOD];
 } CFARobotSnapshot;
 
 typedef struct {
     int turn;
     int distance;
+    double gap;
+    double centerDistance;
+    double arenaRadius;
+    double robotRadius;
     int clinch;
     int finished;
     int winner;
