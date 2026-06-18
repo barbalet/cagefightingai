@@ -1,0 +1,56 @@
+CFA stock model attribution
+===========================
+
+Selected local model
+--------------------
+Directory: cfa/stock/3d_models/boxing_girl
+Original source archive: 5503027.zip
+Downloaded local archive name before cleanup: boxing_girl_thingiverse_5503027.zip
+Local archive retained: no
+Extracted meshes:
+- boxeadora-paraimprimir.stl
+
+Original source
+---------------
+Title: boxing Girl
+Internet Archive identifier: thingiverse-5503027
+Thingiverse item: 5503027
+Internet Archive mirror: https://archive.org/details/thingiverse-5503027
+Original creator: fredy richard sandoval Caroca (frisaca)
+Original date listed in metadata: 2022-09-08
+Internet Archive public date: 2023-01-15 23:09:35
+Internet Archive added date: 2023-01-15 23:09:35
+Source tags: boxing_girl, Articulated, stl, thingiverse, 3D Printing
+
+Original archive checksums
+--------------------------
+Size: 67365760 bytes
+File count: 2
+MD5: 2a5c7b05359616239bee51657db3530e
+SHA1: c81aab03f4a236e7fa34571eace5c949bc55ad19
+CRC32: 9d4bb81b
+
+License
+-------
+License: Creative Commons Attribution 4.0 International (CC BY 4.0)
+License URL: https://creativecommons.org/licenses/by/4.0/
+
+Creator notes
+-------------
+The archived description says the model is intended as an articulated print. It
+also describes using the included cube as a 10 mm scale reference in Cura,
+printing the figure lying down, using tree supports, standard quality, and
+about 30 mm/s print speed on an Ender 3.
+
+Use notes
+---------
+Preserve the creator name, source URL, and CC BY 4.0 license when this mesh is
+converted, adapted, or included in CFA assets. Mark CFA-side mesh changes where
+practical so downstream users can distinguish the original stock source from
+derived work.
+
+Local provenance
+----------------
+The raw Internet Archive metadata file was removed after its relevant creator,
+source, license, date, tag, and archive checksum fields were copied into this
+attribution file.
