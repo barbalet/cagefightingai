@@ -1,0 +1,44 @@
+CFA stock mesh simplification
+=============================
+
+Generated: 2026-06-18
+Source mesh: boxeadora-paraimprimir.stl
+
+Method
+------
+The original STL was loaded with duplicate vertex cleanup enabled, then reduced
+with quadric decimation using trimesh and fast-simplification in a temporary
+Python environment. The original STL, high-detail derivative, and medium-detail
+derivative were removed after review; only the low and superlow variants are
+retained.
+
+Source mesh stats
+-----------------
+Processed vertices: 673481
+Faces: 1347295
+Watertight: no
+Extents: 120.281058 x 25.399994 x 143.470241
+
+Derived meshes
+--------------
+boxeadora-paraimprimir_superlow_4k.stl
+- Processed vertices: 1500
+- Faces: 4118
+- Approximate file size: 201 KB
+- Intended use: very cheap silhouette, placeholder, distant camera work, or
+  mobile-scale fallback
+- Method note: generated from the 35k mesh with vertex clustering, because the
+  quadric simplifier stops above the 4k target on this boundary-heavy source
+  mesh.
+
+boxeadora-paraimprimir_low_35k.stl
+- Processed vertices: 17487
+- Faces: 34999
+- Approximate file size: 1.7 MB
+- Intended use: fast preview, distant camera work, or fallback runtime asset
+
+Notes
+-----
+The original mesh is not watertight, and the simplified variants preserve that
+condition. The simplified meshes keep the same overall model scale and bounding
+shape closely enough for CFA visual review.

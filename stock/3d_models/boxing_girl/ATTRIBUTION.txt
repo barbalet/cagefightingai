@@ -7,8 +7,12 @@ Directory: cfa/stock/3d_models/boxing_girl
 Original source archive: 5503027.zip
 Downloaded local archive name before cleanup: boxing_girl_thingiverse_5503027.zip
 Local archive retained: no
-Extracted meshes:
-- boxeadora-paraimprimir.stl
+Original extracted mesh:
+- boxeadora-paraimprimir.stl (removed after CFA simplification)
+
+CFA retained derived meshes:
+- boxeadora-paraimprimir_low_35k.stl
+- boxeadora-paraimprimir_superlow_4k.stl
 
 Original source
 ---------------
