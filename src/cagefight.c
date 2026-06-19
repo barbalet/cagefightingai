@@ -208,6 +208,11 @@ typedef struct {
     double wall_ny;
     int last_impact_part;
     int last_impact_damage;
+    int block_active;
+    int block_success;
+    int block_arm;
+    int block_part;
+    int block_amount;
     char method[96];
 } RobotState;
 
@@ -223,6 +228,18 @@ typedef struct {
     int active;
     char note[160];
 } Intent;
+
+typedef struct {
+    int attempted;
+    int success;
+    BodyPart shield;
+    BodyPart target;
+    int coverage;
+    int accuracy_penalty;
+    int damage_reduction_pct;
+    int roll;
+    int chance;
+} BlockResult;
 
 typedef struct {
     int winner;
@@ -843,6 +860,161 @@ static BodyPart guard_arm(const RobotState *robot)
     return PART_INVALID;
 }
 
+static int deflectable_target(BodyPart target)
+{
+    return target == PART_HEAD || target == PART_TORSO;
+}
+
+static BodyPart preferred_block_arm(const RobotState *robot,
+                                    CommandId attack_id,
+                                    BodyPart target)
+{
+    BodyPart preferred = PART_INVALID;
+    BodyPart fallback = guard_arm(robot);
+
+    (void)target;
+    switch (attack_id) {
+    case CMD_L_JAB:
+    case CMD_L_HOOK:
+    case CMD_ELBOW:
+        preferred = PART_R_ARM;
+        break;
+    case CMD_R_CROSS:
+    case CMD_R_HOOK:
+    case CMD_UPPERCUT:
+    case CMD_HIGH_KICK:
+        preferred = PART_L_ARM;
+        break;
+    default:
+        preferred = fallback;
+        break;
+    }
+
+    if (preferred != PART_INVALID &&
+        !robot->detached[preferred] &&
+        robot->integrity[preferred] > 0) {
+        return preferred;
+    }
+    return fallback;
+}
+
+static void clear_block_state(RobotState *robot)
+{
+    robot->block_active = 0;
+    robot->block_success = 0;
+    robot->block_arm = PART_INVALID;
+    robot->block_part = PART_INVALID;
+    robot->block_amount = 0;
+}
+
+static BlockResult attempt_block(Fight *fight,
+                                 int defender_side,
+                                 BodyPart target,
+                                 const MoveSpec *spec,
+                                 CommandId attack_id,
+                                 double gap)
+{
+    RobotState *defender = &fight->robot[defender_side];
+    BlockResult block;
+    BodyPart shield;
+    int chance;
+
+    memset(&block, 0, sizeof(block));
+    block.shield = PART_INVALID;
+    block.target = target;
+
+    if (!deflectable_target(target) || defender->down || defender->defeated) {
+        return block;
+    }
+
+    shield = preferred_block_arm(defender, attack_id, target);
+    if (shield == PART_INVALID) {
+        return block;
+    }
+
+    block.attempted = 1;
+    block.shield = shield;
+
+    chance = target == PART_HEAD ? 34 : 20;
+    chance += defender->guard ? (target == PART_HEAD ? 34 : 26) : 0;
+    chance += defender->stability / 5;
+    chance += clamp_int(defender->integrity[shield], 0, part_initial[shield]) / 9;
+    chance -= defender->heat / 9;
+    chance -= defender->shock / 9;
+    chance -= spec->speed / 3;
+
+    if (!defender->guard && target == PART_TORSO) {
+        chance -= 4;
+    }
+    if (gap < 0.10) {
+        chance -= 8;
+    } else if (gap > 0.55) {
+        chance += 5;
+    }
+    if (fight->clinch) {
+        chance -= 8;
+    }
+
+    switch (attack_id) {
+    case CMD_L_JAB:
+        chance -= 4;
+        break;
+    case CMD_L_HOOK:
+    case CMD_R_HOOK:
+    case CMD_ELBOW:
+        chance -= 8;
+        break;
+    case CMD_UPPERCUT:
+        chance -= 10;
+        break;
+    case CMD_HIGH_KICK:
+        chance += 6;
+        break;
+    case CMD_THROW:
+        chance -= 18;
+        break;
+    default:
+        break;
+    }
+
+    block.chance = clamp_int(chance, 6, 92);
+    block.roll = rng_range(&fight->rng, 1, 100);
+    block.success = block.roll <= block.chance;
+
+    if (block.success) {
+        int spread = rng_range(&fight->rng, -6, 8);
+        block.coverage = target == PART_HEAD
+            ? 42 + block.chance / 3 + spread
+            : 28 + block.chance / 4 + spread;
+        if (defender->guard) {
+            block.coverage += target == PART_HEAD ? 12 : 8;
+        }
+        block.coverage = clamp_int(block.coverage, 25,
+                                   target == PART_HEAD ? 82 : 66);
+        block.accuracy_penalty = target == PART_HEAD
+            ? 8 + block.coverage / 5
+            : 4 + block.coverage / 8;
+        block.damage_reduction_pct = block.coverage;
+    } else {
+        block.coverage = defender->guard
+            ? (target == PART_HEAD ? 20 : 12)
+            : (target == PART_HEAD ? 8 : 5);
+        block.accuracy_penalty = defender->guard
+            ? (target == PART_HEAD ? 6 : 3)
+            : 2;
+        block.damage_reduction_pct = defender->guard
+            ? block.coverage / 2
+            : 0;
+    }
+
+    defender->block_active = block.attempted;
+    defender->block_success = block.success;
+    defender->block_arm = shield;
+    defender->block_part = target;
+    defender->block_amount = block.coverage;
+    return block;
+}
+
 static int max_stability(const RobotState *robot)
 {
     int max_value = 100;
@@ -1089,6 +1261,7 @@ static void init_robot(RobotState *robot, int side)
     place_feet_from_body(robot);
     robot->last_impact_part = PART_INVALID;
     robot->last_impact_damage = 0;
+    clear_block_state(robot);
     robot->method[0] = '\0';
 }
 
@@ -1113,6 +1286,7 @@ static void recover_robot(RobotState *robot)
     robot->wall_braced = 0;
     robot->last_impact_part = PART_INVALID;
     robot->last_impact_damage = 0;
+    clear_block_state(robot);
 
     if (robot->heat > 0) {
         robot->heat -= 4;
@@ -1721,28 +1895,36 @@ static void physics_step(Fight *fight, char *out, size_t out_size)
 }
 
 static void apply_damage(Fight *fight, int defender_side, BodyPart target,
-                         int raw_damage, int guarded, char *out,
+                         int raw_damage, const BlockResult *block, char *out,
                          size_t out_size)
 {
     RobotState *defender = &fight->robot[defender_side];
     int armor = part_armor[target];
     int net_damage = raw_damage - armor / 3;
+    int deflected = 0;
 
-    if (guarded) {
-        BodyPart shield = guard_arm(defender);
-        net_damage = raw_damage * 55 / 100 - armor / 3;
-        if (shield != PART_INVALID && (target == PART_HEAD || target == PART_TORSO)) {
-            int shield_damage = clamp_int(raw_damage / 5, 1, 12);
+    if (block != NULL &&
+        block->attempted &&
+        block->damage_reduction_pct > 0 &&
+        block->shield != PART_INVALID) {
+        int reduction = clamp_int(block->damage_reduction_pct, 0, 85);
+        BodyPart shield = block->shield;
+        deflected = 1;
+        net_damage = raw_damage * (100 - reduction) / 100 - armor / 3;
+        if (target == PART_HEAD || target == PART_TORSO) {
+            int shield_damage = clamp_int(raw_damage * (block->success ? 18 : 10) / 100,
+                                          1, block->success ? 14 : 8);
             defender->integrity[shield] -= shield_damage;
-            record_surface_damage(defender, shield, raw_damage / 2,
-                                  shield_damage);
-            append_text(out, out_size, " guard shunts %d into %s;",
-                        shield_damage, part_name(shield));
+            record_surface_damage(defender, shield, raw_damage / 2, shield_damage);
+            append_text(out, out_size, " %s %s deflects %d%%, shunting %d;",
+                        part_name(shield),
+                        block->success ? "guard" : "glancing guard",
+                        reduction, shield_damage);
             detach_if_needed(defender, shield, out, out_size);
         }
     }
 
-    net_damage = clamp_int(net_damage, guarded ? 0 : 1, 80);
+    net_damage = clamp_int(net_damage, deflected ? 0 : 1, 80);
     defender->integrity[target] -= net_damage;
     record_surface_damage(defender, target, raw_damage, net_damage);
 
@@ -1937,7 +2119,7 @@ static void resolve_attack(Fight *fight, int attacker_side, const Intent *intent
     int accuracy;
     int roll;
     int raw_damage;
-    int guarded;
+    BlockResult block;
 
     if (attacker->defeated || defender->defeated) {
         return;
@@ -1977,6 +2159,8 @@ static void resolve_attack(Fight *fight, int attacker_side, const Intent *intent
     }
 
     target = select_target(defender, intent->command, spec);
+    block = attempt_block(fight, defender_side, target, spec,
+                          intent->command.id, gap);
     reach_penalty = fabs(gap - (spec->min_gap_m + spec->max_gap_m) * 0.5) * 24.0;
     accuracy = spec->accuracy + (attacker->stability - 75) / 3 -
                attacker->heat / 20 - (int)reach_penalty;
@@ -1989,8 +2173,10 @@ static void resolve_attack(Fight *fight, int attacker_side, const Intent *intent
     if (defender->circling) {
         accuracy -= 8;
     }
-    if (defender->guard && !defender->down) {
-        accuracy -= (target == PART_HEAD || target == PART_TORSO) ? 16 : 8;
+    if (block.attempted) {
+        accuracy -= block.accuracy_penalty;
+    } else if (defender->guard && !defender->down) {
+        accuracy -= 4;
     }
     if (defender->down) {
         accuracy += intent->command.id == CMD_STOMP ? 24 : 10;
@@ -2009,6 +2195,12 @@ static void resolve_attack(Fight *fight, int attacker_side, const Intent *intent
                     "R%d %s to %s misses (roll %d/%d, gap %.2fm, center %.2fm). ",
                     attacker_side + 1, spec->name, part_name(target), roll,
                     accuracy, gap, center);
+        if (block.attempted && block.success) {
+            append_text(out, out_size,
+                        "R%d %s tracks the line with %s (block roll %d/%d). ",
+                        defender_side + 1, part_name(block.shield),
+                        part_name(block.target), block.roll, block.chance);
+        }
         return;
     }
 
@@ -2018,14 +2210,12 @@ static void resolve_attack(Fight *fight, int attacker_side, const Intent *intent
         raw_damage += 4;
     }
     raw_damage = clamp_int(raw_damage, 1, 80);
-    guarded = defender->guard && !defender->down &&
-              (target == PART_HEAD || target == PART_TORSO);
 
     append_text(out, out_size,
                 "R%d %s hits %s (roll %d/%d, gap %.2fm), raw %d;",
                 attacker_side + 1, spec->name, part_name(target), roll,
                 accuracy, gap, raw_damage);
-    apply_damage(fight, defender_side, target, raw_damage, guarded, out,
+    apply_damage(fight, defender_side, target, raw_damage, &block, out,
                  out_size);
     apply_knockback(fight, attacker_side, target, raw_damage, spec, out,
                     out_size);
@@ -2312,6 +2502,11 @@ static void copy_robot_snapshot(CFARobotSnapshot *snapshot,
     snapshot->wallNormalY = robot->wall_ny;
     snapshot->lastImpactPart = robot->last_impact_part;
     snapshot->lastImpactDamage = robot->last_impact_damage;
+    snapshot->blocking = robot->block_active;
+    snapshot->blockSuccess = robot->block_success;
+    snapshot->blockArm = robot->block_arm;
+    snapshot->blockPart = robot->block_part;
+    snapshot->blockAmount = robot->block_amount;
     copy_part_damage(&snapshot->headDamage, robot, PART_HEAD);
     copy_part_damage(&snapshot->torsoDamage, robot, PART_TORSO);
     copy_part_damage(&snapshot->leftArmDamage, robot, PART_L_ARM);

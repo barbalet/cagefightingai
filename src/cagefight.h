@@ -71,6 +71,11 @@ typedef struct {
     double wallNormalY;
     int lastImpactPart;
     int lastImpactDamage;
+    int blocking;
+    int blockSuccess;
+    int blockArm;
+    int blockPart;
+    int blockAmount;
     CFAPartDamage headDamage;
     CFAPartDamage torsoDamage;
     CFAPartDamage leftArmDamage;

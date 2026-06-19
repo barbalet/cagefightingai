@@ -200,6 +200,13 @@ Supported movement commands:
 | `RESET` | Break clinch and back out |
 | `STAND` | Recover from downed state if lower frame can carry load |
 
+Hands stay in a raised guard posture by default. Incoming head and torso
+strikes can trigger dynamic block attempts when an arm actuator is available.
+`GUARD` increases block tracking, reduces strike accuracy, and can shunt part
+of the impact into the shielding arm. Body shots can be deflected in some
+close and mid-range exchanges, though head protection remains the strongest
+guard behavior.
+
 Supported attack commands:
 
 | Command | Function |
