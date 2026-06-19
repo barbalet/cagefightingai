@@ -19,7 +19,36 @@
 
 #define PI 3.14159265358979323846
 #define ARENA_RADIUS_M 3.00
-#define ROBOT_RADIUS_M 0.34
+#define ROBOT_HEIGHT_M 2.45
+#define ROBOT_STL_SCALE_M_PER_UNIT 0.017080482
+#define ROBOT_FULL_ARM_SPAN_M 2.054
+#define ROBOT_FULL_DEPTH_M 0.434
+#define ROBOT_TORSO_WIDTH_M 0.469
+#define ROBOT_TORSO_DEPTH_M 0.406
+#define ROBOT_ARM_REACH_M 0.91
+#define ROBOT_UPPER_ARM_LENGTH_M 0.38
+#define ROBOT_FOREARM_LENGTH_M 0.43
+#define ROBOT_HAND_SEGMENT_LENGTH_M 0.10
+#define ROBOT_LEG_REACH_M 1.44
+#define ROBOT_UPPER_LEG_LENGTH_M 0.68
+#define ROBOT_LOWER_LEG_LENGTH_M 0.76
+#define ROBOT_FOOT_LENGTH_M 0.315
+#define ROBOT_FOOT_WIDTH_M 0.130
+#define ROBOT_FOOT_HALF_STANCE_M 0.125
+#define ROBOT_FOOT_FORE_OFFSET_M 0.006
+#define ROBOT_FOOT_DOWN_INSET_M 0.16
+#define ROBOT_STEP_SUPPORT_LIMIT_M 0.54
+#define ROBOT_STEP_TRIGGER_M 0.44
+#define ROBOT_FOOT_SETTLE_RATE 0.18
+#define ROBOT_RADIUS_M 0.31
+#define ROBOT_ARM_STRIKE_GAP_M 0.60
+#define ROBOT_HOOK_STRIKE_GAP_M 0.44
+#define ROBOT_UPPERCUT_STRIKE_GAP_M 0.34
+#define ROBOT_KICK_STRIKE_GAP_M 0.92
+#define ROBOT_TORSO_TWIST_REACH_M 0.08
+#define ROBOT_HIP_TWIST_REACH_M 0.12
+#define ROBOT_TORSO_TWIST_FORCE_SCALE 1.08
+#define ROBOT_HIP_TWIST_FORCE_SCALE 1.10
 #define ROBOT_MASS_KG 118.0
 #define FRICTION 0.82
 #define CLINCH_BREAK_GAP_M 0.22
@@ -229,19 +258,19 @@ static const MoveSpec move_specs[CMD_COUNT] = {
       "Break clinch state and shove the body footprint backward." },
     { CMD_STAND, "STAND", 0, 0, 0, 4, 0.00, 0.00, 0.00, 0.00, PART_INVALID, USE_ANY_LEG, 10, 6,
       "Recover from a downed state if the lower frame can carry load." },
-    { CMD_L_JAB, "L_JAB", 1, 10, 82, 10, 0.15, 0.95, 0.03, 0.04, PART_HEAD, USE_L_ARM, 3, 3,
+    { CMD_L_JAB, "L_JAB", 1, 10, 82, 10, 0.15, ROBOT_ARM_STRIKE_GAP_M + ROBOT_TORSO_TWIST_REACH_M, 0.03, 0.04, PART_HEAD, USE_L_ARM, 3, 3,
       "Fast left linear strike used for range finding and processor shock." },
-    { CMD_R_CROSS, "R_CROSS", 1, 18, 72, 8, 0.12, 0.88, 0.04, 0.09, PART_HEAD, USE_R_ARM, 5, 5,
+    { CMD_R_CROSS, "R_CROSS", 1, 18, 72, 8, 0.12, ROBOT_ARM_STRIKE_GAP_M + ROBOT_TORSO_TWIST_REACH_M, 0.04, 0.09, PART_HEAD, USE_R_ARM, 5, 5,
       "Rear straight punch with stronger momentum transfer." },
-    { CMD_L_HOOK, "L_HOOK", 1, 21, 66, 7, 0.00, 0.48, 0.03, 0.11, PART_HEAD, USE_L_ARM, 7, 6,
+    { CMD_L_HOOK, "L_HOOK", 1, 21, 66, 7, 0.00, ROBOT_HOOK_STRIKE_GAP_M + ROBOT_TORSO_TWIST_REACH_M * 0.65, 0.03, 0.11, PART_HEAD, USE_L_ARM, 7, 6,
       "Short arc strike for pocket and collision range." },
-    { CMD_R_HOOK, "R_HOOK", 1, 23, 64, 7, 0.00, 0.48, 0.03, 0.12, PART_HEAD, USE_R_ARM, 7, 7,
+    { CMD_R_HOOK, "R_HOOK", 1, 23, 64, 7, 0.00, ROBOT_HOOK_STRIKE_GAP_M + ROBOT_TORSO_TWIST_REACH_M * 0.65, 0.03, 0.12, PART_HEAD, USE_R_ARM, 7, 7,
       "Heavy right arc strike with elevated knockdown pressure." },
-    { CMD_UPPERCUT, "UPPERCUT", 1, 24, 61, 6, 0.00, 0.38, 0.02, 0.13, PART_HEAD, USE_ANY_ARM, 9, 8,
+    { CMD_UPPERCUT, "UPPERCUT", 1, 24, 61, 6, 0.00, ROBOT_UPPERCUT_STRIKE_GAP_M + ROBOT_TORSO_TWIST_REACH_M * 0.50, 0.02, 0.13, PART_HEAD, USE_ANY_ARM, 9, 8,
       "Vertical close-range strike against the head module." },
-    { CMD_LOW_KICK, "LOW_KICK", 1, 20, 70, 7, 0.18, 0.78, 0.02, 0.12, PART_L_LEG, USE_ANY_LEG, 8, 7,
+    { CMD_LOW_KICK, "LOW_KICK", 1, 20, 70, 7, 0.18, ROBOT_KICK_STRIKE_GAP_M + ROBOT_HIP_TWIST_REACH_M, 0.02, 0.12, PART_L_LEG, USE_ANY_LEG, 8, 7,
       "Low-line strike against knee, hip, and ankle load paths." },
-    { CMD_HIGH_KICK, "HIGH_KICK", 1, 31, 48, 5, 0.22, 0.88, 0.02, 0.18, PART_HEAD, USE_R_LEG, 16, 12,
+    { CMD_HIGH_KICK, "HIGH_KICK", 1, 31, 48, 5, 0.22, ROBOT_KICK_STRIKE_GAP_M + ROBOT_HIP_TWIST_REACH_M, 0.02, 0.18, PART_HEAD, USE_R_LEG, 16, 12,
       "High-energy head strike with high fall risk and thermal cost." },
     { CMD_KNEE, "KNEE", 1, 26, 63, 6, 0.00, 0.30, 0.02, 0.15, PART_TORSO, USE_ANY_LEG, 10, 8,
       "Short piston strike to torso or head from contact range." },
@@ -891,12 +920,13 @@ static void foot_home(const RobotState *robot, int foot,
     double rx;
     double ry;
     double side = foot == FOOT_LEFT ? -1.0 : 1.0;
-    double fore = foot == FOOT_LEFT ? 0.035 : -0.035;
+    double fore = foot == FOOT_LEFT ? ROBOT_FOOT_FORE_OFFSET_M :
+                                      -ROBOT_FOOT_FORE_OFFSET_M;
 
     facing_basis(robot, &fx, &fy, &rx, &ry);
-    *x = robot->x + fx * fore + rx * side * 0.18;
-    *y = robot->y + fy * fore + ry * side * 0.18;
-    clamp_contact_to_arena(x, y, 0.12);
+    *x = robot->x + fx * fore + rx * side * ROBOT_FOOT_HALF_STANCE_M;
+    *y = robot->y + fy * fore + ry * side * ROBOT_FOOT_HALF_STANCE_M;
+    clamp_contact_to_arena(x, y, ROBOT_FOOT_WIDTH_M);
 }
 
 static void place_feet_from_body(RobotState *robot)
@@ -991,7 +1021,7 @@ static void update_robot_footwork(RobotState *robot)
             robot->foot_x[foot] += (home_x[foot] - robot->foot_x[foot]) * 0.65;
             robot->foot_y[foot] += (home_y[foot] - robot->foot_y[foot]) * 0.65;
             clamp_contact_to_arena(&robot->foot_x[foot], &robot->foot_y[foot],
-                                   0.16);
+                                   ROBOT_FOOT_DOWN_INSET_M);
         }
         robot->swing_foot = FOOT_NONE;
         return;
@@ -1018,19 +1048,19 @@ static void update_robot_footwork(RobotState *robot)
         if (foot == robot->swing_foot) {
             robot->foot_x[foot] = home_x[foot];
             robot->foot_y[foot] = home_y[foot];
-        } else if (foot == support && distance < 0.54) {
+        } else if (foot == support && distance < ROBOT_STEP_SUPPORT_LIMIT_M) {
             /* Keep the pivot contact planted unless the hip has overreached. */
-        } else if (distance > 0.44) {
+        } else if (distance > ROBOT_STEP_TRIGGER_M) {
             robot->swing_foot = foot;
             robot->foot_x[foot] = home_x[foot];
             robot->foot_y[foot] = home_y[foot];
         } else {
-            robot->foot_x[foot] += dx * 0.18;
-            robot->foot_y[foot] += dy * 0.18;
+            robot->foot_x[foot] += dx * ROBOT_FOOT_SETTLE_RATE;
+            robot->foot_y[foot] += dy * ROBOT_FOOT_SETTLE_RATE;
         }
 
         clamp_contact_to_arena(&robot->foot_x[foot], &robot->foot_y[foot],
-                               0.12);
+                               ROBOT_FOOT_WIDTH_M);
     }
 }
 
@@ -1747,6 +1777,26 @@ static void apply_damage(Fight *fight, int defender_side, BodyPart target,
     detach_if_needed(defender, target, out, out_size);
 }
 
+static double twist_force_scale(CommandId id)
+{
+    switch (id) {
+    case CMD_L_JAB:
+    case CMD_R_CROSS:
+    case CMD_L_HOOK:
+    case CMD_R_HOOK:
+    case CMD_UPPERCUT:
+    case CMD_ELBOW:
+        return ROBOT_TORSO_TWIST_FORCE_SCALE;
+    case CMD_LOW_KICK:
+    case CMD_HIGH_KICK:
+    case CMD_KNEE:
+    case CMD_STOMP:
+        return ROBOT_HIP_TWIST_FORCE_SCALE;
+    default:
+        return 1.0;
+    }
+}
+
 static void apply_knockback(Fight *fight, int attacker_side, BodyPart target,
                             int raw_damage, const MoveSpec *spec, char *out,
                             size_t out_size)
@@ -1766,6 +1816,7 @@ static void apply_knockback(Fight *fight, int attacker_side, BodyPart target,
                                0.0, 0.85);
     dv = spec->strike_impulse_m * ((double)raw_damage / 16.0) *
          (1.0 + instability * 0.22);
+    dv *= twist_force_scale(spec->id);
 
     if (target == PART_HEAD || target == PART_TORSO) {
         dv *= 1.26;
