@@ -232,6 +232,9 @@ Supported attack commands:
 | File | Doctrine |
 | --- | --- |
 | `command_sets/headhunter.cfos` | Maintain striking distance, attack head processor, stomp if opponent falls |
+| `command_sets/joint_reaper.cfos` | Guarded leg destruction that opens a head finish after Headhunter loses balance |
+| `command_sets/shock_clinch.cfos` | Short-range clinch pressure, throws, stomps, and torso/head shock accumulation |
+| `command_sets/cross_guard.cfos` | Guarded head-counter plan with hooks, uppercuts, resets, and heat control |
 | `command_sets/limb_breaker.cfos` | Damage legs and arms, adapt to damaged lower frame, finish upstairs |
 | `command_sets/clinch_driver.cfos` | Enter body contact, clinch, knee, elbow, and throw |
 | `command_sets/counter_guard.cfos` | Guard, retreat, strafe, and counter when opponent overcommits |

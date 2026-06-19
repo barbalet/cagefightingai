@@ -5,6 +5,9 @@ LDLIBS ?= -lm
 BIN := build/cagefight
 SRC := src/cagefight.c
 COMMAND_SETS := command_sets/headhunter.cfos \
+	command_sets/joint_reaper.cfos \
+	command_sets/shock_clinch.cfos \
+	command_sets/cross_guard.cfos \
 	command_sets/limb_breaker.cfos \
 	command_sets/clinch_driver.cfos \
 	command_sets/counter_guard.cfos

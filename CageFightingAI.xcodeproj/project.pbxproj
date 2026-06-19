@@ -20,6 +20,9 @@
 		8A0000082D12000100CFA001 /* limb_breaker.cfos */ = {isa = PBXFileReference; lastKnownFileType = text; path = limb_breaker.cfos; sourceTree = "<group>"; };
 		8A0000092D12000100CFA001 /* clinch_driver.cfos */ = {isa = PBXFileReference; lastKnownFileType = text; path = clinch_driver.cfos; sourceTree = "<group>"; };
 		8A00000A2D12000100CFA001 /* counter_guard.cfos */ = {isa = PBXFileReference; lastKnownFileType = text; path = counter_guard.cfos; sourceTree = "<group>"; };
+		8A00001A2D12000100CFA001 /* joint_reaper.cfos */ = {isa = PBXFileReference; lastKnownFileType = text; path = joint_reaper.cfos; sourceTree = "<group>"; };
+		8A00001B2D12000100CFA001 /* shock_clinch.cfos */ = {isa = PBXFileReference; lastKnownFileType = text; path = shock_clinch.cfos; sourceTree = "<group>"; };
+		8A00001C2D12000100CFA001 /* cross_guard.cfos */ = {isa = PBXFileReference; lastKnownFileType = text; path = cross_guard.cfos; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
@@ -47,6 +50,9 @@
 			isa = PBXGroup;
 			children = (
 				8A0000072D12000100CFA001 /* headhunter.cfos */,
+				8A00001A2D12000100CFA001 /* joint_reaper.cfos */,
+				8A00001B2D12000100CFA001 /* shock_clinch.cfos */,
+				8A00001C2D12000100CFA001 /* cross_guard.cfos */,
 				8A0000082D12000100CFA001 /* limb_breaker.cfos */,
 				8A0000092D12000100CFA001 /* clinch_driver.cfos */,
 				8A00000A2D12000100CFA001 /* counter_guard.cfos */,
