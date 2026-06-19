@@ -13,6 +13,9 @@ Original extracted mesh:
 CFA retained derived meshes:
 - boxeadora-paraimprimir_low_35k.stl
 - boxeadora-paraimprimir_superlow_4k.stl
+- boxeadora-paraimprimir_robot_retool_smooth_33k.stl
+- boxeadora-paraimprimir_robot_retool_solid_30k.stl
+- boxeadora-paraimprimir_robot_retool_runtime_15k.stl
 
 Original source
 ---------------

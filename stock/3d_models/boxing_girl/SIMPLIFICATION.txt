@@ -9,8 +9,17 @@ Method
 The original STL was loaded with duplicate vertex cleanup enabled, then reduced
 with quadric decimation using trimesh and fast-simplification in a temporary
 Python environment. The original STL, high-detail derivative, and medium-detail
-derivative were removed after review; only the low and superlow variants are
-retained.
+derivative were removed after review; only the low, superlow, and current robot
+retool variants are retained.
+
+An earlier vertex-clustered rounding pass was rejected because it broke the
+figure into ghost-like shards. The current robot retool variants avoid vertex
+clustering. They start from `boxeadora-paraimprimir_low_35k.stl`, remove only
+small disconnected components under 150 faces, apply mild Taubin smoothing,
+preserve bounds, and use conservative quadric decimation. This keeps the figure
+as coherent source components while reducing sharpness and element count. The
+150-face cutoff also removes the two 126-face armpit shard components that
+survived the earlier cleanup pass.
 
 Source mesh stats
 -----------------
@@ -37,8 +46,28 @@ boxeadora-paraimprimir_low_35k.stl
 - Approximate file size: 1.7 MB
 - Intended use: fast preview, distant camera work, or fallback runtime asset
 
+boxeadora-paraimprimir_robot_retool_smooth_33k.stl
+- Processed vertices: 16430
+- Faces: 32871
+- Approximate file size: 1.6 MB
+- Intended use: most conservative rounded robot retool, with maximum retained
+  figure structure
+
+boxeadora-paraimprimir_robot_retool_solid_30k.stl
+- Processed vertices: 14825
+- Faces: 29662
+- Approximate file size: 1.4 MB
+- Intended use: balanced rounded robot retool
+
+boxeadora-paraimprimir_robot_retool_runtime_15k.stl
+- Processed vertices: 7431
+- Faces: 14874
+- Approximate file size: 727 KB
+- Intended use: lighter runtime-oriented rounded robot retool
+
 Notes
 -----
 The original mesh is not watertight, and the simplified variants preserve that
-condition. The simplified meshes keep the same overall model scale and bounding
-shape closely enough for CFA visual review.
+condition. The current robot retool variants keep the same overall model scale
+and remove the tiny disconnected source fragments that caused obvious projection
+artifacts in the failed clustered pass.
