@@ -40,7 +40,14 @@
 #define ROBOT_STEP_SUPPORT_LIMIT_M 0.54
 #define ROBOT_STEP_TRIGGER_M 0.44
 #define ROBOT_FOOT_SETTLE_RATE 0.18
-#define ROBOT_RADIUS_M 0.31
+#define ROBOT_RADIUS_M 0.36
+#define ROBOT_DOWN_RADIUS_BONUS_M 0.11
+#define ROBOT_CONTACT_MARGIN_M 0.04
+#define ROBOT_CONTACT_SLOP_M 0.006
+#define ROBOT_CONTACT_RESTITUTION 0.78
+#define ROBOT_CONTACT_SOLVER_PASSES 6
+#define PHYSICS_SUBSTEPS 3
+#define ROBOT_MAX_SPEED_M_PER_TURN 0.82
 #define ROBOT_ARM_STRIKE_GAP_M 0.60
 #define ROBOT_HOOK_STRIKE_GAP_M 0.44
 #define ROBOT_UPPERCUT_STRIKE_GAP_M 0.34
@@ -793,15 +800,29 @@ static double center_distance(const Fight *fight)
     return sqrt(dx * dx + dy * dy);
 }
 
+static double robot_contact_radius(const RobotState *robot)
+{
+    return ROBOT_RADIUS_M + (robot->down ? ROBOT_DOWN_RADIUS_BONUS_M : 0.0);
+}
+
+static double robot_min_separation(const RobotState *a, const RobotState *b)
+{
+    return robot_contact_radius(a) + robot_contact_radius(b);
+}
+
 static double surface_gap(const Fight *fight)
 {
-    return clamp_double(center_distance(fight) - 2.0 * ROBOT_RADIUS_M, 0.0, 99.0);
+    return clamp_double(center_distance(fight) -
+                            robot_min_separation(&fight->robot[0],
+                                                 &fight->robot[1]),
+                        0.0, 99.0);
 }
 
 static double wall_gap(const RobotState *robot)
 {
     double d = sqrt(robot->x * robot->x + robot->y * robot->y);
-    return clamp_double(ARENA_RADIUS_M - ROBOT_RADIUS_M - d, 0.0, ARENA_RADIUS_M);
+    return clamp_double(ARENA_RADIUS_M - robot_contact_radius(robot) - d,
+                        0.0, ARENA_RADIUS_M);
 }
 
 static void vector_to_opponent(const Fight *fight, int side, double *nx, double *ny)
@@ -1733,11 +1754,21 @@ static void apply_motion_command(Fight *fight, int side, const Intent *intent,
     }
 }
 
+static void clamp_robot_speed(RobotState *robot)
+{
+    double speed = sqrt(robot->vx * robot->vx + robot->vy * robot->vy);
+    if (speed > ROBOT_MAX_SPEED_M_PER_TURN && speed > 0.0001) {
+        double scale = ROBOT_MAX_SPEED_M_PER_TURN / speed;
+        robot->vx *= scale;
+        robot->vy *= scale;
+    }
+}
+
 static void resolve_arena_contact(RobotState *robot, int side, char *out,
                                   size_t out_size)
 {
     double dist = sqrt(robot->x * robot->x + robot->y * robot->y);
-    double max_dist = ARENA_RADIUS_M - ROBOT_RADIUS_M - (robot->down ? 0.18 : 0.0);
+    double max_dist = ARENA_RADIUS_M - robot_contact_radius(robot);
 
     if (dist > max_dist) {
         double nx = dist < 0.0001 ? (side == 0 ? -1.0 : 1.0) : robot->x / dist;
@@ -1775,7 +1806,7 @@ static void resolve_arena_contact(RobotState *robot, int side, char *out,
     }
 
     dist = sqrt(robot->x * robot->x + robot->y * robot->y);
-    if (robot->down && dist > max_dist - 0.05 && dist > 0.0001) {
+    if (robot->down && wall_gap(robot) < 0.28 && dist > 0.0001) {
         robot->wall_braced = 1;
         robot->wall_nx = robot->x / dist;
         robot->wall_ny = robot->y / dist;
@@ -1789,7 +1820,8 @@ static void resolve_robot_contact(Fight *fight, char *out, size_t out_size)
     double dx = b->x - a->x;
     double dy = b->y - a->y;
     double dist = sqrt(dx * dx + dy * dy);
-    double min_sep = 2.0 * ROBOT_RADIUS_M;
+    double min_sep = robot_min_separation(a, b);
+    double contact_sep = min_sep + ROBOT_CONTACT_MARGIN_M;
     double nx;
     double ny;
 
@@ -1802,21 +1834,27 @@ static void resolve_robot_contact(Fight *fight, char *out, size_t out_size)
         ny = dy / dist;
     }
 
-    if (dist < min_sep) {
+    if (dist < contact_sep) {
         double penetration = min_sep - dist;
         double rel = (a->vx - b->vx) * nx + (a->vy - b->vy) * ny;
 
-        a->x -= nx * penetration * 0.5;
-        a->y -= ny * penetration * 0.5;
-        b->x += nx * penetration * 0.5;
-        b->y += ny * penetration * 0.5;
+        if (penetration > 0.0) {
+            double correction = penetration + ROBOT_CONTACT_SLOP_M;
+            a->x -= nx * correction * 0.5;
+            a->y -= ny * correction * 0.5;
+            b->x += nx * correction * 0.5;
+            b->y += ny * correction * 0.5;
+        }
 
         if (rel > 0.0) {
-            double impulse = rel * 0.58;
+            double impulse = rel * ROBOT_CONTACT_RESTITUTION +
+                             clamp_double(penetration, 0.0, 0.20) * 0.16;
             a->vx -= nx * impulse;
             a->vy -= ny * impulse;
             b->vx += nx * impulse;
             b->vy += ny * impulse;
+            clamp_robot_speed(a);
+            clamp_robot_speed(b);
 
             if (!fight->clinch && rel > 0.20) {
                 int impact = clamp_int((int)(rel * 30.0), 1, 16);
@@ -1845,10 +1883,47 @@ static void resolve_robot_contact(Fight *fight, char *out, size_t out_size)
     }
 }
 
+static void project_strike_contact(Fight *fight, int attacker_side,
+                                   char *out, size_t out_size)
+{
+    int defender_side = attacker_side == 0 ? 1 : 0;
+    RobotState *attacker = &fight->robot[attacker_side];
+    RobotState *defender = &fight->robot[defender_side];
+    double dx = defender->x - attacker->x;
+    double dy = defender->y - attacker->y;
+    double dist = sqrt(dx * dx + dy * dy);
+    double min_sep = robot_min_separation(attacker, defender) + ROBOT_CONTACT_SLOP_M;
+    double nx;
+    double ny;
+    double penetration;
+
+    if (dist < 0.0001) {
+        vector_to_opponent(fight, attacker_side, &nx, &ny);
+        dist = 0.0001;
+    } else {
+        nx = dx / dist;
+        ny = dy / dist;
+    }
+
+    penetration = min_sep - dist;
+    if (penetration <= 0.0) {
+        return;
+    }
+
+    attacker->x -= nx * penetration * 0.35;
+    attacker->y -= ny * penetration * 0.35;
+    defender->x += nx * penetration * 0.65;
+    defender->y += ny * penetration * 0.65;
+    resolve_arena_contact(attacker, attacker_side, out, out_size);
+    resolve_arena_contact(defender, defender_side, out, out_size);
+    append_text(out, out_size, " contact shells separate %.2fm;", penetration);
+}
+
 static void physics_step(Fight *fight, char *out, size_t out_size)
 {
     int i;
     int pass;
+    int substep;
 
     for (i = 0; i < 2; i++) {
         RobotState *robot = &fight->robot[i];
@@ -1856,15 +1931,22 @@ static void physics_step(Fight *fight, char *out, size_t out_size)
             robot->vx *= 0.68;
             robot->vy *= 0.68;
         }
-        robot->x += robot->vx;
-        robot->y += robot->vy;
-        resolve_arena_contact(robot, i, out, out_size);
+        clamp_robot_speed(robot);
     }
 
-    for (pass = 0; pass < 3; pass++) {
-        resolve_robot_contact(fight, out, out_size);
-        resolve_arena_contact(&fight->robot[0], 0, out, out_size);
-        resolve_arena_contact(&fight->robot[1], 1, out, out_size);
+    for (substep = 0; substep < PHYSICS_SUBSTEPS; substep++) {
+        for (i = 0; i < 2; i++) {
+            RobotState *robot = &fight->robot[i];
+            robot->x += robot->vx / (double)PHYSICS_SUBSTEPS;
+            robot->y += robot->vy / (double)PHYSICS_SUBSTEPS;
+            resolve_arena_contact(robot, i, out, out_size);
+        }
+
+        for (pass = 0; pass < ROBOT_CONTACT_SOLVER_PASSES; pass++) {
+            resolve_robot_contact(fight, out, out_size);
+            resolve_arena_contact(&fight->robot[0], 0, out, out_size);
+            resolve_arena_contact(&fight->robot[1], 1, out, out_size);
+        }
     }
 
     if (fight->clinch && surface_gap(fight) > CLINCH_BREAK_GAP_M) {
@@ -2013,10 +2095,13 @@ static void apply_knockback(Fight *fight, int attacker_side, BodyPart target,
         dv *= 0.42;
     }
 
+    project_strike_contact(fight, attacker_side, out, out_size);
     defender->vx += nx * dv;
     defender->vy += ny * dv;
     attacker->vx -= nx * dv * 0.28;
     attacker->vy -= ny * dv * 0.28;
+    clamp_robot_speed(defender);
+    clamp_robot_speed(attacker);
 
     if (dv > 0.05) {
         append_text(out, out_size, " impulse %.2fm/t", dv);
