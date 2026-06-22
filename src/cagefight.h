@@ -13,6 +13,7 @@ extern "C" {
 #define CFA_MAX_METHOD 96
 #define CFA_MAX_COMMAND_NAME 24
 #define CFA_MAX_TURNS 240
+#define CFA_MAX_CAPSULES 14
 
 typedef struct CFABout CFABout;
 
@@ -32,21 +33,55 @@ typedef enum {
     CFA_PART_COUNT
 } CFAPart;
 
+typedef enum {
+    CFA_FOOT_PLANTED = 0,
+    CFA_FOOT_LIFTING,
+    CFA_FOOT_SWINGING,
+    CFA_FOOT_LANDING,
+    CFA_FOOT_PIVOTING,
+    CFA_FOOT_SLIPPING
+} CFAFootState;
+
+typedef enum {
+    CFA_BALANCE_SUPPORTED = 0,
+    CFA_BALANCE_EDGE,
+    CFA_BALANCE_OUTSIDE
+} CFABalanceState;
+
 typedef struct {
+    int part;
+    double ax;
+    double ay;
+    double az;
+    double bx;
+    double by;
+    double bz;
+    double radius;
+    double massKg;
+} CFACapsuleSnapshot;
+
+typedef struct {
+    /* Structural integrity points, mirrored by CFA_PART_* order. */
     int head;
     int torso;
     int leftArm;
     int rightArm;
     int leftLeg;
     int rightLeg;
+
+    /* Core simulation condition. */
     int processor;
     int shock;
     int stability;
     int heat;
+
+    /* Current command/posture flags used by animation and tactics. */
     int guarding;
     int retreating;
     int advancing;
     int circling;
+
+    /* Defeat and recovery state. */
     int down;
     int downTicks;
     int defeated;
@@ -54,21 +89,50 @@ typedef struct {
     int rightArmDetached;
     int leftLegDetached;
     int rightLegDetached;
+
+    /* Arena-space body root state in meters, meters/turn, and radians. */
     double x;
     double y;
     double vx;
     double vy;
     double facing;
+    double angularVelocity;
     double wallGap;
+
+    /* Approximate center of mass and stance support in arena-space meters. */
+    double centerMassX;
+    double centerMassY;
+    double centerMassZ;
+    double supportCenterX;
+    double supportCenterY;
+    double balanceOffset;
+    int balanceSupported;
+    int balanceState;
+    double supportRadius;
+
+    /* Foot placement and support hints. Feet are world-space meters. */
     double leftFootX;
     double leftFootY;
     double rightFootX;
     double rightFootY;
+    double leftFootTargetX;
+    double leftFootTargetY;
+    double rightFootTargetX;
+    double rightFootTargetY;
+    int leftFootState;
+    int rightFootState;
+    double leftFootPhase;
+    double rightFootPhase;
     int swingFoot;
     int pivotFoot;
+    double pivotAngle;
+
+    /* Boundary contact response. */
     int wallBraced;
     double wallNormalX;
     double wallNormalY;
+
+    /* Latest contact/block telemetry for rendering, commentary, and debug. */
     int lastImpactPart;
     int lastImpactDamage;
     int blocking;
@@ -76,6 +140,40 @@ typedef struct {
     int blockArm;
     int blockPart;
     int blockAmount;
+    double blockReaction;
+    int parryActive;
+    int guardSide;
+    double guardHandHeight;
+    double guardElbowAngle;
+    double guardCoverage;
+    int windupCommand;
+    double windupProgress;
+    int strikeReleased;
+    int recoveryTicks;
+    int strikePhase;
+    double followThrough;
+    double recoil;
+    int staggerState;
+    double staggerProgress;
+    double staggerDirectionX;
+    double staggerDirectionY;
+    double fallProgress;
+    double fallDirectionX;
+    double fallDirectionY;
+    double fallAngularVelocity;
+    int fallContactPart;
+    int groundContactMask;
+    int groundImpactPart;
+    double groundImpact;
+    double groundSlide;
+    double groundSettle;
+    double wallImpulse;
+    double wallFlex;
+    int getUpState;
+    double getUpProgress;
+    int getUpBlocked;
+
+    /* Accumulated renderer-facing surface damage. */
     CFAPartDamage headDamage;
     CFAPartDamage torsoDamage;
     CFAPartDamage leftArmDamage;
@@ -121,10 +219,15 @@ void cfa_bout_restart(CFABout *bout, uint32_t seed);
 int cfa_bout_step(CFABout *bout, CFATurnSnapshot *snapshot);
 void cfa_bout_get_snapshot(const CFABout *bout, CFATurnSnapshot *snapshot);
 int cfa_bout_is_finished(const CFABout *bout);
+int cfa_bout_get_robot_capsules(const CFABout *bout,
+                                int side,
+                                CFACapsuleSnapshot *capsules,
+                                size_t capacity);
 
 const char *cfa_part_name(int part);
 int cfa_part_initial(int part);
 int cfa_part_armor(int part);
+double cfa_part_mass_kg(int part);
 const char *cfa_command_name(int command_id);
 
 #ifdef __cplusplus
