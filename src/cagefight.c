@@ -23,8 +23,12 @@
 #define ROBOT_STL_SCALE_M_PER_UNIT 0.017080482
 #define ROBOT_FULL_ARM_SPAN_M 2.054
 #define ROBOT_FULL_DEPTH_M 0.434
+#define ROBOT_TORSO_HEIGHT_M 0.971
 #define ROBOT_TORSO_WIDTH_M 0.469
 #define ROBOT_TORSO_DEPTH_M 0.406
+#define ROBOT_HEAD_HEIGHT_M 0.333
+#define ROBOT_HEAD_WIDTH_M 0.264
+#define ROBOT_HEAD_DEPTH_M 0.351
 #define ROBOT_ARM_REACH_M 0.91
 #define ROBOT_UPPER_ARM_LENGTH_M 0.38
 #define ROBOT_FOREARM_LENGTH_M 0.43
@@ -33,7 +37,30 @@
 #define ROBOT_UPPER_LEG_LENGTH_M 0.68
 #define ROBOT_LOWER_LEG_LENGTH_M 0.76
 #define ROBOT_FOOT_LENGTH_M 0.315
+#define ROBOT_FOOT_SEGMENT_LENGTH_M 0.10
 #define ROBOT_FOOT_WIDTH_M 0.130
+#define ROBOT_FOOT_HEIGHT_M 0.216
+#define ROBOT_PELVIS_HEIGHT_M 1.12
+#define ROBOT_HIP_HEIGHT_M 1.29
+#define ROBOT_WAIST_HEIGHT_M 1.46
+#define ROBOT_CHEST_HEIGHT_M 1.72
+#define ROBOT_SHOULDER_HEIGHT_M 1.92
+#define ROBOT_NECK_HEIGHT_M 2.10
+#define ROBOT_HEAD_CENTER_HEIGHT_M 2.29
+#define ROBOT_KNEE_HEIGHT_M 0.72
+#define ROBOT_HIP_HALF_WIDTH_M 0.144
+#define ROBOT_SHOULDER_HALF_WIDTH_M 0.227
+#define ROBOT_REST_HAND_HEIGHT_M 1.48
+#define ROBOT_GUARD_HAND_HEIGHT_M 1.94
+#define ROBOT_STRIKING_HAND_HEIGHT_M 1.90
+#define ROBOT_UPPER_ARM_RADIUS_M 0.056
+#define ROBOT_ELBOW_RADIUS_M 0.047
+#define ROBOT_WRIST_RADIUS_M 0.036
+#define ROBOT_FIST_RADIUS_M 0.044
+#define ROBOT_UPPER_LEG_RADIUS_M 0.062
+#define ROBOT_KNEE_RADIUS_M 0.052
+#define ROBOT_ANKLE_RADIUS_M 0.038
+#define ROBOT_TOE_RADIUS_M 0.024
 #define ROBOT_FOOT_HALF_STANCE_M 0.125
 #define ROBOT_FOOT_FORE_OFFSET_M 0.006
 #define ROBOT_FOOT_DOWN_INSET_M 0.16
@@ -46,6 +73,8 @@
 #define ROBOT_CONTACT_SLOP_M 0.006
 #define ROBOT_CONTACT_RESTITUTION 0.78
 #define ROBOT_CONTACT_SOLVER_PASSES 6
+#define ROBOT_MAX_CAPSULES 14
+#define ROBOT_STRIKE_CONTACT_MARGIN_M 0.06
 #define PHYSICS_SUBSTEPS 3
 #define ROBOT_MAX_SPEED_M_PER_TURN 0.82
 #define ROBOT_ARM_STRIKE_GAP_M 0.60
@@ -255,12 +284,46 @@ typedef struct {
     int score[2];
 } BoutResult;
 
+typedef struct {
+    double x;
+    double y;
+    double z;
+} Vec3;
+
+typedef struct {
+    BodyPart part;
+    Vec3 a;
+    Vec3 b;
+    double radius;
+    double mass_kg;
+} PhysicsCapsule;
+
+typedef struct {
+    PhysicsCapsule items[ROBOT_MAX_CAPSULES];
+    int count;
+} RobotCapsules;
+
+typedef struct {
+    int hit;
+    BodyPart attacker_part;
+    BodyPart defender_part;
+    Vec3 normal;
+    double clearance_m;
+    double penetration_m;
+    double attacker_mass_kg;
+    double defender_mass_kg;
+} StrikeContact;
+
 static const int part_initial[PART_COUNT] = {
     100, 160, 90, 90, 110, 110
 };
 
 static const int part_armor[PART_COUNT] = {
     12, 18, 9, 9, 11, 11
+};
+
+static const double part_mass_kg[PART_COUNT] = {
+    8.0, 58.0, 9.5, 9.5, 21.5, 21.5
 };
 
 static const MoveSpec move_specs[CMD_COUNT] = {
@@ -428,6 +491,157 @@ static int rng_range(uint32_t *state, int min_value, int max_value)
     value = rng_next(state);
     span = max_value - min_value + 1;
     return min_value + (int)(value % (uint32_t)span);
+}
+
+static Vec3 vec3(double x, double y, double z)
+{
+    Vec3 value;
+
+    value.x = x;
+    value.y = y;
+    value.z = z;
+    return value;
+}
+
+static Vec3 vec3_add(Vec3 a, Vec3 b)
+{
+    return vec3(a.x + b.x, a.y + b.y, a.z + b.z);
+}
+
+static Vec3 vec3_sub(Vec3 a, Vec3 b)
+{
+    return vec3(a.x - b.x, a.y - b.y, a.z - b.z);
+}
+
+static Vec3 vec3_scale(Vec3 value, double scale)
+{
+    return vec3(value.x * scale, value.y * scale, value.z * scale);
+}
+
+static double vec3_dot(Vec3 a, Vec3 b)
+{
+    return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+static double vec3_length_sq(Vec3 value)
+{
+    return vec3_dot(value, value);
+}
+
+static double vec3_length(Vec3 value)
+{
+    return sqrt(vec3_length_sq(value));
+}
+
+static Vec3 vec3_normalize_or(Vec3 value, Vec3 fallback)
+{
+    double length = vec3_length(value);
+
+    if (length > 0.000001) {
+        return vec3_scale(value, 1.0 / length);
+    }
+    length = vec3_length(fallback);
+    if (length > 0.000001) {
+        return vec3_scale(fallback, 1.0 / length);
+    }
+    return vec3(1.0, 0.0, 0.0);
+}
+
+static Vec3 local_to_world_point(const RobotState *robot, Vec3 local)
+{
+    double fx = cos(robot->facing);
+    double fy = sin(robot->facing);
+    double rx = -sin(robot->facing);
+    double ry = cos(robot->facing);
+
+    return vec3(robot->x + fx * local.x + rx * local.z,
+                robot->y + fy * local.x + ry * local.z,
+                local.y);
+}
+
+static Vec3 robot_forward_vec(const RobotState *robot)
+{
+    return vec3(cos(robot->facing), sin(robot->facing), 0.0);
+}
+
+static Vec3 robot_side_vec(const RobotState *robot, double side)
+{
+    return vec3(-sin(robot->facing) * side, cos(robot->facing) * side, 0.0);
+}
+
+static void closest_points_on_segments(Vec3 p1, Vec3 q1,
+                                       Vec3 p2, Vec3 q2,
+                                       Vec3 *c1, Vec3 *c2)
+{
+    Vec3 d1 = vec3_sub(q1, p1);
+    Vec3 d2 = vec3_sub(q2, p2);
+    Vec3 r = vec3_sub(p1, p2);
+    double a = vec3_dot(d1, d1);
+    double e = vec3_dot(d2, d2);
+    double f = vec3_dot(d2, r);
+    double s;
+    double t;
+    double c;
+    double b;
+    double denom;
+
+    if (a <= 0.00000001 && e <= 0.00000001) {
+        *c1 = p1;
+        *c2 = p2;
+        return;
+    }
+
+    if (a <= 0.00000001) {
+        s = 0.0;
+        t = clamp_double(f / e, 0.0, 1.0);
+    } else {
+        c = vec3_dot(d1, r);
+        if (e <= 0.00000001) {
+            t = 0.0;
+            s = clamp_double(-c / a, 0.0, 1.0);
+        } else {
+            b = vec3_dot(d1, d2);
+            denom = a * e - b * b;
+            if (denom != 0.0) {
+                s = clamp_double((b * f - c * e) / denom, 0.0, 1.0);
+            } else {
+                s = 0.0;
+            }
+            t = (b * s + f) / e;
+            if (t < 0.0) {
+                t = 0.0;
+                s = clamp_double(-c / a, 0.0, 1.0);
+            } else if (t > 1.0) {
+                t = 1.0;
+                s = clamp_double((b - c) / a, 0.0, 1.0);
+            }
+        }
+    }
+
+    *c1 = vec3_add(p1, vec3_scale(d1, s));
+    *c2 = vec3_add(p2, vec3_scale(d2, t));
+}
+
+static double capsule_clearance(const PhysicsCapsule *a,
+                                const PhysicsCapsule *b,
+                                Vec3 *normal)
+{
+    Vec3 pa;
+    Vec3 pb;
+    Vec3 delta;
+    double distance;
+
+    closest_points_on_segments(a->a, a->b, b->a, b->b, &pa, &pb);
+    delta = vec3_sub(pb, pa);
+    distance = vec3_length(delta);
+    if (distance > 0.000001) {
+        *normal = vec3_scale(delta, 1.0 / distance);
+    } else {
+        Vec3 ca = vec3_scale(vec3_add(a->a, a->b), 0.5);
+        Vec3 cb = vec3_scale(vec3_add(b->a, b->b), 0.5);
+        *normal = vec3_normalize_or(vec3_sub(cb, ca), vec3(1.0, 0.0, 0.0));
+    }
+    return distance - a->radius - b->radius;
 }
 
 static const char *part_name(BodyPart part)
@@ -1105,6 +1319,246 @@ static void clamp_contact_to_arena(double *x, double *y, double inset)
     }
 }
 
+static void add_capsule(RobotCapsules *capsules, BodyPart part,
+                        Vec3 a, Vec3 b, double radius, double mass_kg)
+{
+    PhysicsCapsule *capsule;
+
+    if (capsules->count >= ROBOT_MAX_CAPSULES) {
+        return;
+    }
+
+    capsule = &capsules->items[capsules->count++];
+    capsule->part = part;
+    capsule->a = a;
+    capsule->b = b;
+    capsule->radius = radius;
+    capsule->mass_kg = mass_kg > 0.0 ? mass_kg : part_mass_kg[part];
+}
+
+static Vec3 vec3_blend(Vec3 from, Vec3 to, double amount)
+{
+    double t = clamp_double(amount, 0.0, 1.0);
+    return vec3_add(from, vec3_scale(vec3_sub(to, from), t));
+}
+
+static Vec3 fixed_two_bone_joint(Vec3 anchor, Vec3 target,
+                                 double upper_length, double lower_length,
+                                 Vec3 preferred_bend, Vec3 *end_out)
+{
+    double max_reach = upper_length + lower_length - 0.001;
+    double min_reach = fabs(upper_length - lower_length) + 0.001;
+    Vec3 delta = vec3_sub(target, anchor);
+    double requested_distance = vec3_length(delta);
+    Vec3 direction = vec3_normalize_or(delta, preferred_bend);
+    double distance = clamp_double(requested_distance, min_reach, max_reach);
+    Vec3 end = vec3_add(anchor, vec3_scale(direction, distance));
+    double along = (upper_length * upper_length + distance * distance -
+                    lower_length * lower_length) / (2.0 * distance);
+    double lift = sqrt(fmax(0.0, upper_length * upper_length - along * along));
+    Vec3 bend = vec3_sub(preferred_bend,
+                         vec3_scale(direction, vec3_dot(preferred_bend,
+                                                        direction)));
+
+    if (vec3_length(bend) < 0.0001) {
+        Vec3 fallback = fabs(direction.z) < 0.92 ? vec3(0.0, 0.0, 1.0) :
+                                                   vec3(1.0, 0.0, 0.0);
+        bend = vec3_sub(fallback,
+                        vec3_scale(direction, vec3_dot(fallback, direction)));
+    }
+    bend = vec3_normalize_or(bend, vec3(0.0, 0.0, 1.0));
+
+    if (end_out != NULL) {
+        *end_out = end;
+    }
+    return vec3_add(vec3_add(anchor, vec3_scale(direction, along)),
+                    vec3_scale(bend, lift));
+}
+
+static Vec3 robot_hand_local_for_contact(const RobotState *robot, double side,
+                                         BodyPart part)
+{
+    Vec3 hand = vec3(0.18, ROBOT_GUARD_HAND_HEIGHT_M - 0.04, side * 0.21);
+
+    if (robot->guard) {
+        hand = vec3(0.22, ROBOT_GUARD_HAND_HEIGHT_M + 0.05, side * 0.15);
+    }
+
+    if (robot->block_active && robot->block_arm == part) {
+        double target_y = robot->block_part == PART_TORSO ?
+                          ROBOT_CHEST_HEIGHT_M + 0.02 :
+                          ROBOT_HEAD_CENTER_HEIGHT_M - 0.22;
+        double lateral = robot->block_part == PART_TORSO ? 0.13 : 0.10;
+        double forward_reach = robot->block_part == PART_TORSO ? 0.30 : 0.27;
+        double blend = 0.48 + (double)robot->block_amount / 110.0;
+        Vec3 block_target = vec3(forward_reach, target_y, side * lateral);
+
+        hand = vec3_blend(hand, block_target, blend);
+    }
+
+    return hand;
+}
+
+static void add_arm_capsules(const RobotState *robot, RobotCapsules *capsules,
+                             double side)
+{
+    BodyPart part = side < 0.0 ? PART_L_ARM : PART_R_ARM;
+    Vec3 shoulder;
+    Vec3 hand;
+    Vec3 hand_direction;
+    Vec3 wrist_target;
+    Vec3 elbow;
+    Vec3 wrist;
+    Vec3 hand_tip;
+
+    if (robot->detached[part]) {
+        return;
+    }
+
+    shoulder = vec3(0.02, ROBOT_SHOULDER_HEIGHT_M,
+                    side * ROBOT_SHOULDER_HALF_WIDTH_M);
+    hand = robot_hand_local_for_contact(robot, side, part);
+    hand_direction = vec3_normalize_or(vec3_sub(hand, shoulder),
+                                       vec3(1.0, -0.1, side * 0.25));
+    wrist_target = vec3_sub(hand,
+                            vec3_scale(hand_direction,
+                                       ROBOT_HAND_SEGMENT_LENGTH_M));
+    elbow = fixed_two_bone_joint(shoulder, wrist_target,
+                                 ROBOT_UPPER_ARM_LENGTH_M,
+                                 ROBOT_FOREARM_LENGTH_M,
+                                 vec3(-0.10, -0.08, side * 0.42),
+                                 &wrist);
+    hand_tip = vec3_add(wrist,
+                        vec3_scale(hand_direction,
+                                   ROBOT_HAND_SEGMENT_LENGTH_M));
+
+    add_capsule(capsules, part,
+                local_to_world_point(robot, shoulder),
+                local_to_world_point(robot, elbow),
+                ROBOT_UPPER_ARM_RADIUS_M, 4.1);
+    add_capsule(capsules, part,
+                local_to_world_point(robot, elbow),
+                local_to_world_point(robot, wrist),
+                (ROBOT_ELBOW_RADIUS_M + ROBOT_WRIST_RADIUS_M) * 0.5, 3.5);
+    add_capsule(capsules, part,
+                local_to_world_point(robot, wrist),
+                local_to_world_point(robot, hand_tip),
+                ROBOT_FIST_RADIUS_M, 1.9);
+}
+
+static void add_leg_capsules(const RobotState *robot, RobotCapsules *capsules,
+                             int foot, double side)
+{
+    BodyPart part = foot == FOOT_LEFT ? PART_L_LEG : PART_R_LEG;
+    Vec3 hip_local;
+    Vec3 hip_world;
+    Vec3 foot_world;
+    Vec3 forward_world;
+    Vec3 side_world;
+    Vec3 knee;
+    Vec3 ankle;
+    Vec3 toe;
+
+    if (robot->detached[part]) {
+        return;
+    }
+
+    hip_local = vec3(-0.01, ROBOT_HIP_HEIGHT_M, side * ROBOT_HIP_HALF_WIDTH_M);
+    hip_world = local_to_world_point(robot, hip_local);
+    foot_world = vec3(robot->foot_x[foot], robot->foot_y[foot],
+                      ROBOT_FOOT_HEIGHT_M * 0.25);
+    forward_world = robot_forward_vec(robot);
+    side_world = robot_side_vec(robot, side);
+    knee = fixed_two_bone_joint(hip_world, foot_world,
+                                ROBOT_UPPER_LEG_LENGTH_M,
+                                ROBOT_LOWER_LEG_LENGTH_M,
+                                vec3_add(vec3_add(vec3_scale(forward_world, 0.35),
+                                                  vec3_scale(side_world, 0.08)),
+                                         vec3(0.0, 0.0, 0.06)),
+                                &ankle);
+    toe = vec3_add(ankle, vec3_scale(forward_world,
+                                     ROBOT_FOOT_SEGMENT_LENGTH_M));
+
+    add_capsule(capsules, part, hip_world, knee,
+                ROBOT_UPPER_LEG_RADIUS_M, 10.0);
+    add_capsule(capsules, part, knee, ankle,
+                (ROBOT_KNEE_RADIUS_M + ROBOT_ANKLE_RADIUS_M) * 0.5, 8.5);
+    add_capsule(capsules, part, ankle, toe,
+                ROBOT_FOOT_WIDTH_M * 0.5, 3.0);
+}
+
+static void build_down_capsules(const RobotState *robot,
+                                RobotCapsules *capsules)
+{
+    add_capsule(capsules, PART_TORSO,
+                local_to_world_point(robot, vec3(-0.26, 0.34, 0.0)),
+                local_to_world_point(robot, vec3(0.52, 0.34, 0.0)),
+                0.23, part_mass_kg[PART_TORSO] + 6.0);
+    add_capsule(capsules, PART_HEAD,
+                local_to_world_point(robot, vec3(0.54, 0.36, 0.0)),
+                local_to_world_point(robot, vec3(0.74, 0.36, 0.0)),
+                fmax(ROBOT_HEAD_WIDTH_M, ROBOT_HEAD_DEPTH_M) * 0.46,
+                part_mass_kg[PART_HEAD]);
+    if (!robot->detached[PART_L_ARM]) {
+        add_capsule(capsules, PART_L_ARM,
+                    local_to_world_point(robot, vec3(0.02, 0.28, -0.24)),
+                    local_to_world_point(robot, vec3(0.48, 0.24, -0.34)),
+                    ROBOT_ELBOW_RADIUS_M, part_mass_kg[PART_L_ARM]);
+    }
+    if (!robot->detached[PART_R_ARM]) {
+        add_capsule(capsules, PART_R_ARM,
+                    local_to_world_point(robot, vec3(0.02, 0.28, 0.24)),
+                    local_to_world_point(robot, vec3(0.48, 0.24, 0.34)),
+                    ROBOT_ELBOW_RADIUS_M, part_mass_kg[PART_R_ARM]);
+    }
+    if (!robot->detached[PART_L_LEG]) {
+        add_capsule(capsules, PART_L_LEG,
+                    local_to_world_point(robot, vec3(-0.24, 0.22, -0.13)),
+                    local_to_world_point(robot, vec3(-0.82, 0.19, -0.20)),
+                    ROBOT_UPPER_LEG_RADIUS_M, part_mass_kg[PART_L_LEG]);
+    }
+    if (!robot->detached[PART_R_LEG]) {
+        add_capsule(capsules, PART_R_LEG,
+                    local_to_world_point(robot, vec3(-0.24, 0.22, 0.13)),
+                    local_to_world_point(robot, vec3(-0.82, 0.19, 0.20)),
+                    ROBOT_UPPER_LEG_RADIUS_M, part_mass_kg[PART_R_LEG]);
+    }
+}
+
+static void build_robot_capsules(const RobotState *robot,
+                                 RobotCapsules *capsules)
+{
+    memset(capsules, 0, sizeof(*capsules));
+
+    if (robot->down) {
+        build_down_capsules(robot, capsules);
+        return;
+    }
+
+    add_capsule(capsules, PART_TORSO,
+                local_to_world_point(robot, vec3(0.00, ROBOT_PELVIS_HEIGHT_M, 0.0)),
+                local_to_world_point(robot, vec3(0.02, ROBOT_NECK_HEIGHT_M, 0.0)),
+                fmax(ROBOT_TORSO_WIDTH_M, ROBOT_TORSO_DEPTH_M) * 0.45,
+                part_mass_kg[PART_TORSO]);
+    add_capsule(capsules, PART_HEAD,
+                local_to_world_point(robot,
+                                     vec3(0.03,
+                                          ROBOT_HEAD_CENTER_HEIGHT_M -
+                                              ROBOT_HEAD_HEIGHT_M * 0.23,
+                                          0.0)),
+                local_to_world_point(robot,
+                                     vec3(0.03,
+                                          ROBOT_HEAD_CENTER_HEIGHT_M +
+                                              ROBOT_HEAD_HEIGHT_M * 0.23,
+                                          0.0)),
+                fmax(ROBOT_HEAD_WIDTH_M, ROBOT_HEAD_DEPTH_M) * 0.46,
+                part_mass_kg[PART_HEAD]);
+    add_arm_capsules(robot, capsules, -1.0);
+    add_arm_capsules(robot, capsules, 1.0);
+    add_leg_capsules(robot, capsules, FOOT_LEFT, -1.0);
+    add_leg_capsules(robot, capsules, FOOT_RIGHT, 1.0);
+}
+
 static void foot_home(const RobotState *robot, int foot,
                       double *x, double *y)
 {
@@ -1764,6 +2218,68 @@ static void clamp_robot_speed(RobotState *robot)
     }
 }
 
+static void resolve_capsule_arena_contact(RobotState *robot, int side,
+                                          char *out, size_t out_size)
+{
+    RobotCapsules capsules;
+    double deepest = 0.0;
+    double best_nx = 0.0;
+    double best_ny = 0.0;
+    int i;
+
+    build_robot_capsules(robot, &capsules);
+
+    for (i = 0; i < capsules.count; i++) {
+        const PhysicsCapsule *capsule = &capsules.items[i];
+        double sx = capsule->b.x - capsule->a.x;
+        double sy = capsule->b.y - capsule->a.y;
+        double denom = sx * sx + sy * sy;
+        double t = 0.0;
+        double px;
+        double py;
+        double dist;
+        double penetration;
+
+        if (denom > 0.000001) {
+            t = clamp_double(-(capsule->a.x * sx + capsule->a.y * sy) / denom,
+                             0.0, 1.0);
+        }
+        px = capsule->a.x + sx * t;
+        py = capsule->a.y + sy * t;
+        dist = sqrt(px * px + py * py);
+        penetration = dist + capsule->radius - ARENA_RADIUS_M;
+        if (penetration > deepest && dist > 0.0001) {
+            deepest = penetration;
+            best_nx = px / dist;
+            best_ny = py / dist;
+        }
+    }
+
+    if (deepest > 0.0) {
+        double outward_v = robot->vx * best_nx + robot->vy * best_ny;
+
+        robot->x -= best_nx * (deepest + ROBOT_CONTACT_SLOP_M);
+        robot->y -= best_ny * (deepest + ROBOT_CONTACT_SLOP_M);
+        robot->wall_nx = best_nx;
+        robot->wall_ny = best_ny;
+        robot->wall_braced = robot->down ? 1 : robot->wall_braced;
+
+        if (outward_v > 0.0) {
+            robot->vx -= best_nx * outward_v * 1.18;
+            robot->vy -= best_ny * outward_v * 1.18;
+            if (outward_v > 0.24) {
+                int impact = clamp_int((int)(outward_v * 28.0), 1, 14);
+                robot->shock = clamp_int(robot->shock + impact, 0, 140);
+                robot->stability = clamp_int(robot->stability - impact, 0,
+                                             max_stability(robot));
+                append_text(out, out_size,
+                            "R%d limb/body capsule caught by cage %.2fm/t. ",
+                            side + 1, outward_v);
+            }
+        }
+    }
+}
+
 static void resolve_arena_contact(RobotState *robot, int side, char *out,
                                   size_t out_size)
 {
@@ -1811,71 +2327,116 @@ static void resolve_arena_contact(RobotState *robot, int side, char *out,
         robot->wall_nx = robot->x / dist;
         robot->wall_ny = robot->y / dist;
     }
+
+    resolve_capsule_arena_contact(robot, side, out, out_size);
 }
 
-static void resolve_robot_contact(Fight *fight, char *out, size_t out_size)
+static void resolve_robot_contact(Fight *fight, char *out, size_t out_size,
+                                  int *reported)
 {
+    RobotCapsules a_capsules;
+    RobotCapsules b_capsules;
     RobotState *a = &fight->robot[0];
     RobotState *b = &fight->robot[1];
-    double dx = b->x - a->x;
-    double dy = b->y - a->y;
-    double dist = sqrt(dx * dx + dy * dy);
-    double min_sep = robot_min_separation(a, b);
-    double contact_sep = min_sep + ROBOT_CONTACT_MARGIN_M;
-    double nx;
-    double ny;
+    int i;
+    int j;
+    double center_dx = b->x - a->x;
+    double center_dy = b->y - a->y;
 
-    if (dist < 0.0001) {
-        nx = 1.0;
-        ny = 0.0;
-        dist = 0.0001;
-    } else {
-        nx = dx / dist;
-        ny = dy / dist;
+    if (center_dx * center_dx + center_dy * center_dy > 4.25) {
+        return;
     }
 
-    if (dist < contact_sep) {
-        double penetration = min_sep - dist;
-        double rel = (a->vx - b->vx) * nx + (a->vy - b->vy) * ny;
+    build_robot_capsules(a, &a_capsules);
+    build_robot_capsules(b, &b_capsules);
 
-        if (penetration > 0.0) {
-            double correction = penetration + ROBOT_CONTACT_SLOP_M;
-            a->x -= nx * correction * 0.5;
-            a->y -= ny * correction * 0.5;
-            b->x += nx * correction * 0.5;
-            b->y += ny * correction * 0.5;
-        }
+    for (i = 0; i < a_capsules.count; i++) {
+        for (j = 0; j < b_capsules.count; j++) {
+            const PhysicsCapsule *ca = &a_capsules.items[i];
+            const PhysicsCapsule *cb = &b_capsules.items[j];
+            Vec3 normal3;
+            double clearance = capsule_clearance(ca, cb, &normal3);
+            double penetration = -clearance;
+            double nx = normal3.x;
+            double ny = normal3.y;
+            double horizontal = sqrt(nx * nx + ny * ny);
+            double rel;
 
-        if (rel > 0.0) {
-            double impulse = rel * ROBOT_CONTACT_RESTITUTION +
-                             clamp_double(penetration, 0.0, 0.20) * 0.16;
-            a->vx -= nx * impulse;
-            a->vy -= ny * impulse;
-            b->vx += nx * impulse;
-            b->vy += ny * impulse;
-            clamp_robot_speed(a);
-            clamp_robot_speed(b);
+            if (clearance > ROBOT_CONTACT_MARGIN_M) {
+                continue;
+            }
 
-            if (!fight->clinch && rel > 0.20) {
-                int impact = clamp_int((int)(rel * 30.0), 1, 16);
-                a->shock = clamp_int(a->shock + impact / 2, 0, 140);
-                b->shock = clamp_int(b->shock + impact / 2, 0, 140);
-                a->stability = clamp_int(a->stability - impact / 2, 0,
-                                         max_stability(a));
-                b->stability = clamp_int(b->stability - impact / 2, 0,
-                                         max_stability(b));
-                append_text(out, out_size, "hard-body collision rel %.2fm/t. ", rel);
-                if (rel > 0.42) {
-                    double shove = clamp_double(rel * 0.22, 0.04, 0.16);
-                    if (!a->down && (a->stability < 35 || rel > 0.72)) {
-                        a->vx -= nx * shove;
-                        a->vy -= ny * shove;
-                        fall_down(a, "hard-body collision", out, out_size);
-                    }
-                    if (!b->down && (b->stability < 35 || rel > 0.72)) {
-                        b->vx += nx * shove;
-                        b->vy += ny * shove;
-                        fall_down(b, "hard-body collision", out, out_size);
+            if (horizontal < 0.0001) {
+                double dist = sqrt(center_dx * center_dx + center_dy * center_dy);
+                if (dist < 0.0001) {
+                    nx = 1.0;
+                    ny = 0.0;
+                } else {
+                    nx = center_dx / dist;
+                    ny = center_dy / dist;
+                }
+            } else {
+                nx /= horizontal;
+                ny /= horizontal;
+            }
+
+            if (penetration > 0.0) {
+                double inv_a = 1.0 / fmax(2.0, ca->mass_kg);
+                double inv_b = 1.0 / fmax(2.0, cb->mass_kg);
+                double inv_sum = inv_a + inv_b;
+                double correction = penetration + ROBOT_CONTACT_SLOP_M;
+                double share_a = inv_a / inv_sum;
+                double share_b = inv_b / inv_sum;
+
+                a->x -= nx * correction * share_a;
+                a->y -= ny * correction * share_a;
+                b->x += nx * correction * share_b;
+                b->y += ny * correction * share_b;
+            }
+
+            rel = (a->vx - b->vx) * nx + (a->vy - b->vy) * ny;
+            if (rel > 0.0 || penetration > 0.0) {
+                double inv_a = 1.0 / fmax(2.0, ca->mass_kg);
+                double inv_b = 1.0 / fmax(2.0, cb->mass_kg);
+                double inv_sum = inv_a + inv_b;
+                double impulse = (rel * (1.0 + ROBOT_CONTACT_RESTITUTION) +
+                                  clamp_double(penetration, 0.0, 0.18) * 0.20) /
+                                 inv_sum;
+
+                if (impulse > 0.0) {
+                    a->vx -= nx * impulse * inv_a;
+                    a->vy -= ny * impulse * inv_a;
+                    b->vx += nx * impulse * inv_b;
+                    b->vy += ny * impulse * inv_b;
+                    clamp_robot_speed(a);
+                    clamp_robot_speed(b);
+                }
+
+                if (!fight->clinch && rel > 0.20 && reported != NULL &&
+                    !*reported) {
+                    int impact = clamp_int((int)(rel * 34.0), 1, 18);
+                    a->shock = clamp_int(a->shock + impact / 2, 0, 140);
+                    b->shock = clamp_int(b->shock + impact / 2, 0, 140);
+                    a->stability = clamp_int(a->stability - impact / 2, 0,
+                                             max_stability(a));
+                    b->stability = clamp_int(b->stability - impact / 2, 0,
+                                             max_stability(b));
+                    append_text(out, out_size,
+                                "capsule collision %s/%s rel %.2fm/t. ",
+                                part_name(ca->part), part_name(cb->part), rel);
+                    *reported = 1;
+                    if (rel > 0.46) {
+                        double shove = clamp_double(rel * 0.20, 0.04, 0.18);
+                        if (!a->down && (a->stability < 35 || rel > 0.76)) {
+                            a->vx -= nx * shove;
+                            a->vy -= ny * shove;
+                            fall_down(a, "capsule collision", out, out_size);
+                        }
+                        if (!b->down && (b->stability < 35 || rel > 0.76)) {
+                            b->vx += nx * shove;
+                            b->vy += ny * shove;
+                            fall_down(b, "capsule collision", out, out_size);
+                        }
                     }
                 }
             }
@@ -1884,6 +2445,7 @@ static void resolve_robot_contact(Fight *fight, char *out, size_t out_size)
 }
 
 static void project_strike_contact(Fight *fight, int attacker_side,
+                                   const StrikeContact *contact,
                                    char *out, size_t out_size)
 {
     int defender_side = attacker_side == 0 ? 1 : 0;
@@ -1896,6 +2458,9 @@ static void project_strike_contact(Fight *fight, int attacker_side,
     double nx;
     double ny;
     double penetration;
+    int suppress_contact_log = 1;
+
+    resolve_robot_contact(fight, out, out_size, &suppress_contact_log);
 
     if (dist < 0.0001) {
         vector_to_opponent(fight, attacker_side, &nx, &ny);
@@ -1917,6 +2482,265 @@ static void project_strike_contact(Fight *fight, int attacker_side,
     resolve_arena_contact(attacker, attacker_side, out, out_size);
     resolve_arena_contact(defender, defender_side, out, out_size);
     append_text(out, out_size, " contact shells separate %.2fm;", penetration);
+
+    if (contact != NULL && contact->hit) {
+        append_text(out, out_size, " swept %s/%s surface;",
+                    part_name(contact->attacker_part),
+                    part_name(contact->defender_part));
+    }
+}
+
+static double command_strike_mass_kg(CommandId id)
+{
+    switch (id) {
+    case CMD_L_JAB:
+        return 7.5;
+    case CMD_R_CROSS:
+    case CMD_L_HOOK:
+    case CMD_R_HOOK:
+    case CMD_UPPERCUT:
+        return 10.5;
+    case CMD_ELBOW:
+        return 12.0;
+    case CMD_LOW_KICK:
+        return 20.0;
+    case CMD_HIGH_KICK:
+        return 24.0;
+    case CMD_KNEE:
+    case CMD_STOMP:
+        return 22.0;
+    case CMD_THROW:
+        return 54.0;
+    default:
+        return 12.0;
+    }
+}
+
+static BodyPart command_strike_part(const RobotState *attacker, CommandId id)
+{
+    switch (id) {
+    case CMD_L_JAB:
+    case CMD_L_HOOK:
+        return PART_L_ARM;
+    case CMD_R_CROSS:
+    case CMD_R_HOOK:
+        return PART_R_ARM;
+    case CMD_UPPERCUT:
+    case CMD_ELBOW:
+        return !attacker->detached[PART_R_ARM] ? PART_R_ARM : PART_L_ARM;
+    case CMD_LOW_KICK:
+    case CMD_HIGH_KICK:
+    case CMD_KNEE:
+    case CMD_STOMP:
+        return PART_R_LEG;
+    default:
+        return PART_TORSO;
+    }
+}
+
+static int build_strike_sweep_capsule(const RobotState *attacker,
+                                      CommandId id,
+                                      PhysicsCapsule *capsule)
+{
+    BodyPart part = command_strike_part(attacker, id);
+    Vec3 start;
+    Vec3 end;
+    double side = 1.0;
+    double radius = ROBOT_FIST_RADIUS_M;
+
+    if (part == PART_L_ARM) {
+        side = -1.0;
+    }
+
+    if ((part == PART_L_ARM || part == PART_R_ARM) &&
+        attacker->detached[part]) {
+        return 0;
+    }
+    if (part == PART_R_LEG && attacker->detached[PART_R_LEG]) {
+        return 0;
+    }
+
+    switch (id) {
+    case CMD_L_JAB:
+        start = robot_hand_local_for_contact(attacker, -1.0, PART_L_ARM);
+        end = vec3(0.80, ROBOT_STRIKING_HAND_HEIGHT_M + 0.04, -0.13);
+        radius = ROBOT_FIST_RADIUS_M;
+        break;
+    case CMD_R_CROSS:
+        start = robot_hand_local_for_contact(attacker, 1.0, PART_R_ARM);
+        end = vec3(0.84, ROBOT_STRIKING_HAND_HEIGHT_M + 0.02, 0.13);
+        radius = ROBOT_FIST_RADIUS_M;
+        break;
+    case CMD_L_HOOK:
+        start = robot_hand_local_for_contact(attacker, -1.0, PART_L_ARM);
+        end = vec3(0.70, ROBOT_STRIKING_HAND_HEIGHT_M + 0.02, -0.07);
+        radius = ROBOT_FIST_RADIUS_M * 1.08;
+        break;
+    case CMD_R_HOOK:
+        start = robot_hand_local_for_contact(attacker, 1.0, PART_R_ARM);
+        end = vec3(0.74, ROBOT_STRIKING_HAND_HEIGHT_M + 0.02, 0.07);
+        radius = ROBOT_FIST_RADIUS_M * 1.08;
+        break;
+    case CMD_UPPERCUT:
+        start = robot_hand_local_for_contact(attacker, side, part);
+        end = vec3(0.64, ROBOT_HEAD_CENTER_HEIGHT_M - 0.18, side * 0.10);
+        radius = ROBOT_FIST_RADIUS_M * 1.06;
+        break;
+    case CMD_ELBOW:
+        start = robot_hand_local_for_contact(attacker, side, part);
+        end = vec3(0.50, ROBOT_STRIKING_HAND_HEIGHT_M, side * 0.08);
+        radius = ROBOT_ELBOW_RADIUS_M * 1.16;
+        break;
+    case CMD_LOW_KICK:
+        start = vec3(attacker->foot_x[FOOT_RIGHT],
+                     attacker->foot_y[FOOT_RIGHT],
+                     ROBOT_FOOT_HEIGHT_M * 0.25);
+        end = local_to_world_point(attacker,
+                                   vec3(1.08, 0.24, ROBOT_HIP_HALF_WIDTH_M));
+        radius = ROBOT_FOOT_WIDTH_M * 0.52;
+        capsule->part = PART_R_LEG;
+        capsule->a = start;
+        capsule->b = end;
+        capsule->radius = radius;
+        capsule->mass_kg = command_strike_mass_kg(id);
+        return 1;
+    case CMD_HIGH_KICK:
+        start = vec3(attacker->foot_x[FOOT_RIGHT],
+                     attacker->foot_y[FOOT_RIGHT],
+                     ROBOT_FOOT_HEIGHT_M * 0.25);
+        end = local_to_world_point(attacker,
+                                   vec3(1.20,
+                                        ROBOT_KNEE_HEIGHT_M + 0.74,
+                                        ROBOT_HIP_HALF_WIDTH_M * 0.78));
+        radius = ROBOT_FOOT_WIDTH_M * 0.52;
+        capsule->part = PART_R_LEG;
+        capsule->a = start;
+        capsule->b = end;
+        capsule->radius = radius;
+        capsule->mass_kg = command_strike_mass_kg(id);
+        return 1;
+    case CMD_KNEE:
+        start = local_to_world_point(attacker,
+                                     vec3(0.10, ROBOT_HIP_HEIGHT_M,
+                                          ROBOT_HIP_HALF_WIDTH_M));
+        end = local_to_world_point(attacker,
+                                   vec3(0.58, ROBOT_CHEST_HEIGHT_M - 0.10,
+                                        ROBOT_HIP_HALF_WIDTH_M * 0.58));
+        radius = ROBOT_KNEE_RADIUS_M * 1.35;
+        capsule->part = PART_R_LEG;
+        capsule->a = start;
+        capsule->b = end;
+        capsule->radius = radius;
+        capsule->mass_kg = command_strike_mass_kg(id);
+        return 1;
+    case CMD_STOMP:
+        start = vec3(attacker->foot_x[FOOT_RIGHT],
+                     attacker->foot_y[FOOT_RIGHT],
+                     ROBOT_FOOT_HEIGHT_M * 0.25);
+        end = local_to_world_point(attacker,
+                                   vec3(0.90, 0.40, ROBOT_HIP_HALF_WIDTH_M));
+        radius = ROBOT_FOOT_WIDTH_M * 0.56;
+        capsule->part = PART_R_LEG;
+        capsule->a = start;
+        capsule->b = end;
+        capsule->radius = radius;
+        capsule->mass_kg = command_strike_mass_kg(id);
+        return 1;
+    default:
+        return 0;
+    }
+
+    capsule->part = part;
+    capsule->a = local_to_world_point(attacker, start);
+    capsule->b = local_to_world_point(attacker, end);
+    capsule->radius = radius;
+    capsule->mass_kg = command_strike_mass_kg(id);
+    return 1;
+}
+
+static int capsule_matches_target(const PhysicsCapsule *capsule,
+                                  BodyPart target)
+{
+    return capsule->part == target;
+}
+
+static StrikeContact find_strike_contact(const Fight *fight, int attacker_side,
+                                         CommandId id, BodyPart target,
+                                         const BlockResult *block)
+{
+    int defender_side = attacker_side == 0 ? 1 : 0;
+    const RobotState *attacker = &fight->robot[attacker_side];
+    const RobotState *defender = &fight->robot[defender_side];
+    PhysicsCapsule strike;
+    RobotCapsules defender_capsules;
+    StrikeContact result;
+    BodyPart preferred_part = target;
+    int pass;
+
+    memset(&result, 0, sizeof(result));
+    result.attacker_part = command_strike_part(attacker, id);
+    result.defender_part = target;
+    result.normal = vec3_normalize_or(vec3(defender->x - attacker->x,
+                                           defender->y - attacker->y,
+                                           0.0),
+                                      vec3(1.0, 0.0, 0.0));
+    result.clearance_m = 99.0;
+    result.attacker_mass_kg = command_strike_mass_kg(id);
+    result.defender_mass_kg = part_mass_kg[target];
+
+    if (!build_strike_sweep_capsule(attacker, id, &strike)) {
+        result.hit = 1;
+        result.clearance_m = 0.0;
+        return result;
+    }
+
+    if (block != NULL && block->attempted && block->success &&
+        block->shield != PART_INVALID) {
+        preferred_part = block->shield;
+    }
+
+    build_robot_capsules(defender, &defender_capsules);
+
+    for (pass = 0; pass < 2; pass++) {
+        BodyPart wanted = pass == 0 ? preferred_part : target;
+        int i;
+
+        for (i = 0; i < defender_capsules.count; i++) {
+            const PhysicsCapsule *capsule = &defender_capsules.items[i];
+            Vec3 normal;
+            double clearance;
+
+            if (!capsule_matches_target(capsule, wanted)) {
+                continue;
+            }
+
+            clearance = capsule_clearance(&strike, capsule, &normal);
+            if (clearance < result.clearance_m) {
+                result.clearance_m = clearance;
+                result.penetration_m = clearance < 0.0 ? -clearance : 0.0;
+                result.normal = normal;
+                result.attacker_part = strike.part;
+                result.defender_part = capsule->part;
+                result.attacker_mass_kg = strike.mass_kg;
+                result.defender_mass_kg = capsule->mass_kg;
+            }
+        }
+
+        if (result.clearance_m < 99.0 &&
+            (pass == 1 ||
+             result.clearance_m <= ROBOT_STRIKE_CONTACT_MARGIN_M)) {
+            break;
+        }
+    }
+
+    if (result.clearance_m >= 99.0) {
+        result.clearance_m = 0.0;
+        result.hit = 1;
+        return result;
+    }
+
+    result.hit = result.clearance_m <= ROBOT_STRIKE_CONTACT_MARGIN_M;
+    return result;
 }
 
 static void physics_step(Fight *fight, char *out, size_t out_size)
@@ -1924,6 +2748,7 @@ static void physics_step(Fight *fight, char *out, size_t out_size)
     int i;
     int pass;
     int substep;
+    int reported_contact = 0;
 
     for (i = 0; i < 2; i++) {
         RobotState *robot = &fight->robot[i];
@@ -1943,7 +2768,7 @@ static void physics_step(Fight *fight, char *out, size_t out_size)
         }
 
         for (pass = 0; pass < ROBOT_CONTACT_SOLVER_PASSES; pass++) {
-            resolve_robot_contact(fight, out, out_size);
+            resolve_robot_contact(fight, out, out_size, &reported_contact);
             resolve_arena_contact(&fight->robot[0], 0, out, out_size);
             resolve_arena_contact(&fight->robot[1], 1, out, out_size);
         }
@@ -2062,8 +2887,9 @@ static double twist_force_scale(CommandId id)
 }
 
 static void apply_knockback(Fight *fight, int attacker_side, BodyPart target,
-                            int raw_damage, const MoveSpec *spec, char *out,
-                            size_t out_size)
+                            int raw_damage, const MoveSpec *spec,
+                            const StrikeContact *contact,
+                            char *out, size_t out_size)
 {
     int defender_side = attacker_side == 0 ? 1 : 0;
     RobotState *attacker = &fight->robot[attacker_side];
@@ -2072,15 +2898,33 @@ static void apply_knockback(Fight *fight, int attacker_side, BodyPart target,
     double ny;
     double dv;
     double instability;
+    double strike_mass = command_strike_mass_kg(spec->id);
+    double target_mass = part_mass_kg[target];
+    double mass_ratio;
+    double recoil_scale;
     int fall_pressure;
     int threshold;
 
     vector_to_opponent(fight, attacker_side, &nx, &ny);
+    if (contact != NULL && contact->hit) {
+        double hx = contact->normal.x;
+        double hy = contact->normal.y;
+        double horizontal = sqrt(hx * hx + hy * hy);
+        if (horizontal > 0.0001) {
+            nx = hx / horizontal;
+            ny = hy / horizontal;
+        }
+        strike_mass = contact->attacker_mass_kg;
+        target_mass = contact->defender_mass_kg;
+    }
+
     instability = clamp_double((100.0 - (double)defender->stability) / 100.0,
                                0.0, 0.85);
     dv = spec->strike_impulse_m * ((double)raw_damage / 16.0) *
          (1.0 + instability * 0.22);
     dv *= twist_force_scale(spec->id);
+    mass_ratio = clamp_double(strike_mass / fmax(2.0, target_mass), 0.28, 1.55);
+    dv *= 0.78 + mass_ratio * 0.36;
 
     if (target == PART_HEAD || target == PART_TORSO) {
         dv *= 1.26;
@@ -2095,16 +2939,19 @@ static void apply_knockback(Fight *fight, int attacker_side, BodyPart target,
         dv *= 0.42;
     }
 
-    project_strike_contact(fight, attacker_side, out, out_size);
+    project_strike_contact(fight, attacker_side, contact, out, out_size);
     defender->vx += nx * dv;
     defender->vy += ny * dv;
-    attacker->vx -= nx * dv * 0.28;
-    attacker->vy -= ny * dv * 0.28;
+    recoil_scale = clamp_double(target_mass / fmax(2.0, strike_mass + target_mass) * 0.55,
+                                0.18, 0.52);
+    attacker->vx -= nx * dv * recoil_scale;
+    attacker->vy -= ny * dv * recoil_scale;
     clamp_robot_speed(defender);
     clamp_robot_speed(attacker);
 
     if (dv > 0.05) {
-        append_text(out, out_size, " impulse %.2fm/t", dv);
+        append_text(out, out_size, " impulse %.2fm/t mass %.0f>%.0fkg",
+                    dv, strike_mass, target_mass);
     }
 
     if (defender->down) {
@@ -2125,6 +2972,14 @@ static void apply_knockback(Fight *fight, int attacker_side, BodyPart target,
     }
     if (fight->clinch && spec->id == CMD_THROW) {
         fall_pressure += 48;
+    }
+    if (contact != NULL && contact->hit) {
+        fall_pressure += (int)(clamp_double(contact->penetration_m, 0.0, 0.12) *
+                               120.0);
+        if (contact->defender_part == PART_HEAD ||
+            contact->defender_part == PART_TORSO) {
+            fall_pressure += 6;
+        }
     }
 
     threshold = 70 + defender->stability / 5;
@@ -2205,6 +3060,7 @@ static void resolve_attack(Fight *fight, int attacker_side, const Intent *intent
     int roll;
     int raw_damage;
     BlockResult block;
+    StrikeContact strike_contact;
 
     if (attacker->defeated || defender->defeated) {
         return;
@@ -2246,9 +3102,32 @@ static void resolve_attack(Fight *fight, int attacker_side, const Intent *intent
     target = select_target(defender, intent->command, spec);
     block = attempt_block(fight, defender_side, target, spec,
                           intent->command.id, gap);
+    strike_contact = find_strike_contact(fight, attacker_side,
+                                         intent->command.id, target, &block);
+    if (!strike_contact.hit && strike_contact.clearance_m > 0.18) {
+        append_text(out, out_size,
+                    "R%d %s misses by swept capsule geometry against %s (clear %.2fm). ",
+                    attacker_side + 1, spec->name, part_name(target),
+                    strike_contact.clearance_m);
+        return;
+    }
+    if (strike_contact.hit &&
+        strike_contact.defender_part != target &&
+        !(block.attempted && block.success)) {
+        append_text(out, out_size,
+                    "R%d %s surface contact redirects %s to %s. ",
+                    attacker_side + 1, spec->name, part_name(target),
+                    part_name(strike_contact.defender_part));
+        target = strike_contact.defender_part;
+    }
     reach_penalty = fabs(gap - (spec->min_gap_m + spec->max_gap_m) * 0.5) * 24.0;
     accuracy = spec->accuracy + (attacker->stability - 75) / 3 -
                attacker->heat / 20 - (int)reach_penalty;
+    if (strike_contact.hit) {
+        accuracy += 5;
+    } else {
+        accuracy -= clamp_int((int)(strike_contact.clearance_m * 120.0), 0, 28);
+    }
     if (defender->retreating) {
         accuracy -= 16;
     }
@@ -2302,8 +3181,8 @@ static void resolve_attack(Fight *fight, int attacker_side, const Intent *intent
                 accuracy, gap, raw_damage);
     apply_damage(fight, defender_side, target, raw_damage, &block, out,
                  out_size);
-    apply_knockback(fight, attacker_side, target, raw_damage, spec, out,
-                    out_size);
+    apply_knockback(fight, attacker_side, target, raw_damage, spec,
+                    &strike_contact, out, out_size);
     append_text(out, out_size, ". ");
 
     if (intent->command.id == CMD_THROW && fight->clinch) {
