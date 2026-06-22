@@ -172,6 +172,30 @@ typedef struct {
     int getUpState;
     double getUpProgress;
     int getUpBlocked;
+    double getUpForceX;
+    double getUpForceY;
+    double getUpForceZ;
+    int getUpSupportMask;
+    double getUpPressure;
+    double groundedDefense;
+    double groundedRoll;
+    double clinchLeverage;
+    double clinchPressure;
+    double throwTorque;
+    int recentDamagePart;
+    int recentDamageRaw;
+    int recentDamageNet;
+    double recentDamageX;
+    double recentDamageY;
+    double recentDamageZ;
+    int headDetached;
+    double headDetachX;
+    double headDetachY;
+    double headDetachZ;
+    double headDetachVX;
+    double headDetachVY;
+    double headDetachVZ;
+    double headDetachSpin;
 
     /* Accumulated renderer-facing surface damage. */
     CFAPartDamage headDamage;

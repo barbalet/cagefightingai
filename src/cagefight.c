@@ -123,6 +123,11 @@
 #define CFA_GETUP_CROUCH 6
 #define CFA_GETUP_STAND 7
 #define CFA_GETUP_GUARD_RESET 8
+#define CFA_GETUP_HAND_SUPPORT (CFA_GROUND_L_HAND | CFA_GROUND_R_HAND)
+#define CFA_GETUP_KNEE_SUPPORT (CFA_GROUND_L_KNEE | CFA_GROUND_R_KNEE)
+#define CFA_GETUP_FOOT_SUPPORT (CFA_GROUND_L_FOOT | CFA_GROUND_R_FOOT)
+#define CFA_GETUP_LEG_SUPPORT (CFA_GETUP_KNEE_SUPPORT | CFA_GETUP_FOOT_SUPPORT)
+#define ROBOT_HEAD_DETACH_TRAUMA_THRESHOLD 92
 #define PHYSICS_SUBSTEPS 3
 #define ROBOT_MAX_SPEED_M_PER_TURN 0.82
 #define ROBOT_MAX_ANGULAR_SPEED_RAD_PER_TURN 0.42
@@ -140,7 +145,7 @@
 #define ROBOT_HIP_TWIST_FORCE_SCALE 1.10
 #define ROBOT_MASS_KG 118.0
 #define FRICTION 0.82
-#define CLINCH_BREAK_GAP_M 0.22
+#define CLINCH_BREAK_GAP_M 0.34
 #define FOOT_LEFT 0
 #define FOOT_RIGHT 1
 #define FOOT_NONE -1
@@ -365,6 +370,32 @@ typedef struct {
     int getup_total;
     double getup_progress;
     int getup_blocked;
+    double getup_force_x;
+    double getup_force_y;
+    double getup_force_z;
+    int getup_support_mask;
+    double getup_pressure;
+    double grounded_defense;
+    double grounded_roll;
+    double clinch_leverage;
+    double clinch_pressure;
+    double throw_torque;
+    BodyPart recent_damage_part;
+    int recent_damage_raw;
+    int recent_damage_net;
+    double recent_damage_x;
+    double recent_damage_y;
+    double recent_damage_z;
+    int recent_damage_ticks;
+    int head_detached;
+    double head_detach_x;
+    double head_detach_y;
+    double head_detach_z;
+    double head_detach_vx;
+    double head_detach_vy;
+    double head_detach_vz;
+    double head_detach_spin;
+    int head_detach_ticks;
     char method[96];
 } RobotState;
 
@@ -495,9 +526,9 @@ static const MoveSpec move_specs[CMD_COUNT] = {
       "Short piston strike to torso or head from contact range." },
     { CMD_ELBOW, "ELBOW", 1, 25, 67, 7, 0.00, 0.28, 0.01, 0.14, PART_HEAD, USE_ANY_ARM, 7, 6,
       "Compact close strike using the forearm hinge and elbow hardpoint." },
-    { CMD_CLINCH, "CLINCH", 1, 4, 74, 8, 0.00, 0.18, 0.03, 0.02, PART_TORSO, USE_BOTH_ARMS, 6, 5,
+    { CMD_CLINCH, "CLINCH", 1, 4, 74, 8, 0.00, 0.32, 0.03, 0.02, PART_TORSO, USE_BOTH_ARMS, 6, 5,
       "Attach both arms to the opponent frame and constrain separation." },
-    { CMD_THROW, "THROW", 1, 34, 52, 4, 0.00, 0.10, 0.00, 0.34, PART_TORSO, USE_BOTH_ARMS, 18, 14,
+    { CMD_THROW, "THROW", 1, 34, 52, 4, 0.00, 0.30, 0.00, 0.34, PART_TORSO, USE_BOTH_ARMS, 18, 14,
       "Clinch-only rotational takedown with high knockback and fall pressure." },
     { CMD_STOMP, "STOMP", 1, 29, 55, 4, 0.00, 0.28, 0.00, 0.16, PART_R_LEG, USE_ANY_LEG, 15, 11,
       "Downward strike against a close or downed opponent." }
@@ -1930,11 +1961,13 @@ static void build_down_capsules(const RobotState *robot,
                 local_to_world_point(robot, vec3(-0.26, 0.34, 0.0)),
                 local_to_world_point(robot, vec3(0.52, 0.34, 0.0)),
                 0.23, part_mass_kg[PART_TORSO]);
-    add_capsule(capsules, PART_HEAD,
-                local_to_world_point(robot, vec3(0.54, 0.36, 0.0)),
-                local_to_world_point(robot, vec3(0.74, 0.36, 0.0)),
-                fmax(ROBOT_HEAD_WIDTH_M, ROBOT_HEAD_DEPTH_M) * 0.46,
-                part_mass_kg[PART_HEAD]);
+    if (!robot->head_detached) {
+        add_capsule(capsules, PART_HEAD,
+                    local_to_world_point(robot, vec3(0.54, 0.36, 0.0)),
+                    local_to_world_point(robot, vec3(0.74, 0.36, 0.0)),
+                    fmax(ROBOT_HEAD_WIDTH_M, ROBOT_HEAD_DEPTH_M) * 0.46,
+                    part_mass_kg[PART_HEAD]);
+    }
     if (!robot->detached[PART_L_ARM]) {
         add_capsule(capsules, PART_L_ARM,
                     local_to_world_point(robot, vec3(0.02, 0.28, -0.24)),
@@ -1976,19 +2009,21 @@ static void build_robot_capsules(const RobotState *robot,
                 local_to_world_point(robot, vec3(0.02, ROBOT_NECK_HEIGHT_M, 0.0)),
                 fmax(ROBOT_TORSO_WIDTH_M, ROBOT_TORSO_DEPTH_M) * 0.45,
                 part_mass_kg[PART_TORSO]);
-    add_capsule(capsules, PART_HEAD,
-                local_to_world_point(robot,
-                                     vec3(0.03,
-                                          ROBOT_HEAD_CENTER_HEIGHT_M -
-                                              ROBOT_HEAD_HEIGHT_M * 0.23,
-                                          0.0)),
-                local_to_world_point(robot,
-                                     vec3(0.03,
-                                          ROBOT_HEAD_CENTER_HEIGHT_M +
-                                              ROBOT_HEAD_HEIGHT_M * 0.23,
-                                          0.0)),
-                fmax(ROBOT_HEAD_WIDTH_M, ROBOT_HEAD_DEPTH_M) * 0.46,
-                part_mass_kg[PART_HEAD]);
+    if (!robot->head_detached) {
+        add_capsule(capsules, PART_HEAD,
+                    local_to_world_point(robot,
+                                         vec3(0.03,
+                                              ROBOT_HEAD_CENTER_HEIGHT_M -
+                                                  ROBOT_HEAD_HEIGHT_M * 0.23,
+                                              0.0)),
+                    local_to_world_point(robot,
+                                         vec3(0.03,
+                                              ROBOT_HEAD_CENTER_HEIGHT_M +
+                                                  ROBOT_HEAD_HEIGHT_M * 0.23,
+                                              0.0)),
+                    fmax(ROBOT_HEAD_WIDTH_M, ROBOT_HEAD_DEPTH_M) * 0.46,
+                    part_mass_kg[PART_HEAD]);
+    }
     add_arm_capsules(robot, capsules, -1.0);
     add_arm_capsules(robot, capsules, 1.0);
     add_leg_capsules(robot, capsules, FOOT_LEFT, -1.0);
@@ -2563,6 +2598,32 @@ static void init_robot(RobotState *robot, int side)
     robot->getup_total = 0;
     robot->getup_progress = 0.0;
     robot->getup_blocked = 0;
+    robot->getup_force_x = 0.0;
+    robot->getup_force_y = 0.0;
+    robot->getup_force_z = 0.0;
+    robot->getup_support_mask = 0;
+    robot->getup_pressure = 0.0;
+    robot->grounded_defense = 0.0;
+    robot->grounded_roll = 0.0;
+    robot->clinch_leverage = 0.0;
+    robot->clinch_pressure = 0.0;
+    robot->throw_torque = 0.0;
+    robot->recent_damage_part = PART_INVALID;
+    robot->recent_damage_raw = 0;
+    robot->recent_damage_net = 0;
+    robot->recent_damage_x = 0.0;
+    robot->recent_damage_y = 0.0;
+    robot->recent_damage_z = 0.0;
+    robot->recent_damage_ticks = 0;
+    robot->head_detached = 0;
+    robot->head_detach_x = 0.0;
+    robot->head_detach_y = 0.0;
+    robot->head_detach_z = 0.0;
+    robot->head_detach_vx = 0.0;
+    robot->head_detach_vy = 0.0;
+    robot->head_detach_vz = 0.0;
+    robot->head_detach_spin = 0.0;
+    robot->head_detach_ticks = 0;
     robot->method[0] = '\0';
 }
 
@@ -2588,6 +2649,79 @@ static void recover_robot(RobotState *robot)
     robot->wall_braced = 0;
     robot->last_impact_part = PART_INVALID;
     robot->last_impact_damage = 0;
+    if (robot->getup_force_x != 0.0 || robot->getup_force_y != 0.0 ||
+        robot->getup_force_z != 0.0) {
+        robot->getup_force_x *= 0.54;
+        robot->getup_force_y *= 0.54;
+        robot->getup_force_z *= 0.58;
+        if (fabs(robot->getup_force_x) < 0.006) {
+            robot->getup_force_x = 0.0;
+        }
+        if (fabs(robot->getup_force_y) < 0.006) {
+            robot->getup_force_y = 0.0;
+        }
+        if (fabs(robot->getup_force_z) < 0.006) {
+            robot->getup_force_z = 0.0;
+        }
+    }
+    if (robot->getup_pressure > 0.0) {
+        robot->getup_pressure *= 0.66;
+        if (robot->getup_pressure < 0.02) {
+            robot->getup_pressure = 0.0;
+        }
+    }
+    robot->getup_support_mask = 0;
+    if (robot->grounded_defense > 0.0) {
+        robot->grounded_defense *= 0.70;
+        if (robot->grounded_defense < 0.02) {
+            robot->grounded_defense = 0.0;
+        }
+    }
+    if (robot->grounded_roll != 0.0) {
+        robot->grounded_roll *= 0.62;
+        if (fabs(robot->grounded_roll) < 0.02) {
+            robot->grounded_roll = 0.0;
+        }
+    }
+    if (robot->clinch_leverage > 0.0) {
+        robot->clinch_leverage *= 0.68;
+        if (robot->clinch_leverage < 0.02) {
+            robot->clinch_leverage = 0.0;
+        }
+    }
+    if (robot->clinch_pressure > 0.0) {
+        robot->clinch_pressure *= 0.66;
+        if (robot->clinch_pressure < 0.02) {
+            robot->clinch_pressure = 0.0;
+        }
+    }
+    if (robot->throw_torque != 0.0) {
+        robot->throw_torque *= 0.58;
+        if (fabs(robot->throw_torque) < 0.02) {
+            robot->throw_torque = 0.0;
+        }
+    }
+    if (robot->recent_damage_ticks > 0) {
+        robot->recent_damage_ticks--;
+        if (robot->recent_damage_ticks == 0) {
+            robot->recent_damage_part = PART_INVALID;
+            robot->recent_damage_raw = 0;
+            robot->recent_damage_net = 0;
+        }
+    }
+    if (robot->head_detached) {
+        robot->head_detach_ticks++;
+        robot->head_detach_x += robot->head_detach_vx;
+        robot->head_detach_y += robot->head_detach_vy;
+        robot->head_detach_z = fmax(0.13, robot->head_detach_z + robot->head_detach_vz);
+        robot->head_detach_vx *= 0.82;
+        robot->head_detach_vy *= 0.82;
+        robot->head_detach_vz = robot->head_detach_vz * 0.58 - 0.018;
+        if (robot->head_detach_z <= 0.13 && robot->head_detach_vz < 0.0) {
+            robot->head_detach_vz *= -0.22;
+        }
+        robot->head_detach_spin *= 0.88;
+    }
     clear_block_state(robot);
     clear_guard_pose_state(robot);
     robot->attack_released = 0;
@@ -2663,6 +2797,7 @@ static void recover_robot(RobotState *robot)
         robot->getup_total = 0;
         robot->getup_progress = 0.0;
         robot->getup_blocked = 0;
+        robot->getup_support_mask = 0;
     }
     if (robot->strike_phase != ROBOT_STRIKE_PHASE_WINDUP &&
         robot->follow_through <= 0.0 && robot->recoil <= 0.0 &&
@@ -2718,6 +2853,10 @@ static int evaluate_defeat(RobotState *robot)
         return 1;
     }
 
+    if (robot->head_detached) {
+        mark_defeat(robot, "dramatic knockout by head detachment");
+        return 1;
+    }
     if (robot->processor <= 0 || robot->integrity[PART_HEAD] <= 0) {
         mark_defeat(robot, "processor kill by head module failure");
         return 1;
@@ -2754,6 +2893,63 @@ static void detach_if_needed(RobotState *robot, BodyPart part, char *out,
     }
 }
 
+static Vec3 damage_anchor_for_part(const RobotState *robot, BodyPart part)
+{
+    switch (part) {
+    case PART_HEAD:
+        return local_to_world_point(robot,
+                                    vec3(0.06,
+                                         robot->down ? 0.38 :
+                                             ROBOT_HEAD_CENTER_HEIGHT_M,
+                                         0.0));
+    case PART_TORSO:
+        return local_to_world_point(robot,
+                                    vec3(0.04,
+                                         robot->down ? 0.34 :
+                                             ROBOT_CHEST_HEIGHT_M,
+                                         0.0));
+    case PART_L_ARM:
+        return local_to_world_point(robot,
+                                    vec3(0.18,
+                                         robot->down ? 0.26 :
+                                             ROBOT_REST_HAND_HEIGHT_M,
+                                         -0.28));
+    case PART_R_ARM:
+        return local_to_world_point(robot,
+                                    vec3(0.18,
+                                         robot->down ? 0.26 :
+                                             ROBOT_REST_HAND_HEIGHT_M,
+                                         0.28));
+    case PART_L_LEG:
+        return local_to_world_point(robot,
+                                    vec3(-0.18,
+                                         robot->down ? 0.20 :
+                                             ROBOT_KNEE_HEIGHT_M,
+                                         -0.17));
+    case PART_R_LEG:
+        return local_to_world_point(robot,
+                                    vec3(-0.18,
+                                         robot->down ? 0.20 :
+                                             ROBOT_KNEE_HEIGHT_M,
+                                         0.17));
+    default:
+        return vec3(robot->x, robot->y, robot->down ? 0.32 : ROBOT_CHEST_HEIGHT_M);
+    }
+}
+
+static void set_recent_damage_site(RobotState *robot, BodyPart part,
+                                   Vec3 point)
+{
+    if (part < 0 || part >= PART_COUNT) {
+        return;
+    }
+    robot->recent_damage_part = part;
+    robot->recent_damage_x = point.x;
+    robot->recent_damage_y = point.y;
+    robot->recent_damage_z = point.z;
+    robot->recent_damage_ticks = 4;
+}
+
 static void record_surface_damage(RobotState *robot, BodyPart part,
                                   int raw_damage, int net_damage)
 {
@@ -2777,6 +2973,65 @@ static void record_surface_damage(RobotState *robot, BodyPart part,
     robot->dent[part] = clamp_int(robot->dent[part] + dent_gain, 0, 100);
     robot->last_impact_part = part;
     robot->last_impact_damage = clamp_int(raw_damage + net_damage, 0, 160);
+    robot->recent_damage_part = part;
+    robot->recent_damage_raw = raw_damage;
+    robot->recent_damage_net = net_damage;
+    set_recent_damage_site(robot, part, damage_anchor_for_part(robot, part));
+}
+
+static void detach_head_for_knockout(RobotState *robot, double nx, double ny,
+                                     double impulse, double yaw_impulse,
+                                     int raw_damage,
+                                     const StrikeContact *contact,
+                                     char *out, size_t out_size)
+{
+    int trauma;
+    Vec3 anchor;
+
+    if (robot->head_detached) {
+        return;
+    }
+    if (contact != NULL && contact->guarded && raw_damage < 48) {
+        return;
+    }
+    if (contact != NULL && contact->glancing && raw_damage < 52) {
+        return;
+    }
+
+    trauma = raw_damage +
+             (int)(fabs(yaw_impulse) * 840.0) +
+             (int)(impulse * 90.0) +
+             (100 - clamp_int(robot->integrity[PART_HEAD], 0, 100)) / 2 +
+             robot->dent[PART_HEAD] / 3;
+    if (trauma < ROBOT_HEAD_DETACH_TRAUMA_THRESHOLD ||
+        (robot->integrity[PART_HEAD] > 18 && raw_damage < 45)) {
+        return;
+    }
+
+    anchor = damage_anchor_for_part(robot, PART_HEAD);
+    robot->head_detached = 1;
+    robot->head_detach_x = anchor.x;
+    robot->head_detach_y = anchor.y;
+    robot->head_detach_z = fmax(anchor.z, ROBOT_HEAD_CENTER_HEIGHT_M * 0.55);
+    robot->head_detach_vx = robot->vx + nx * clamp_double(impulse * 0.90, 0.18, 0.52);
+    robot->head_detach_vy = robot->vy + ny * clamp_double(impulse * 0.90, 0.18, 0.52);
+    robot->head_detach_vz = 0.16 + clamp_double(raw_damage / 180.0, 0.0, 0.20);
+    robot->head_detach_spin = clamp_abs(yaw_impulse * 7.0 +
+                                            (nx >= 0.0 ? 0.8 : -0.8),
+                                        4.0);
+    robot->head_detach_ticks = 0;
+    robot->integrity[PART_HEAD] = 0;
+    robot->processor = 0;
+    robot->shock = 140;
+    robot->scuff[PART_HEAD] = 100;
+    robot->dent[PART_HEAD] = 100;
+    set_recent_damage_site(robot, PART_HEAD, anchor);
+    mark_defeat(robot, "dramatic knockout by head detachment");
+    append_text(out, out_size,
+                " HEAD DETACH KO trauma %d, head tumbles %.2fm/t;",
+                trauma,
+                sqrt(robot->head_detach_vx * robot->head_detach_vx +
+                     robot->head_detach_vy * robot->head_detach_vy));
 }
 
 static BodyPart select_target(const RobotState *defender, Command command,
@@ -2892,6 +3147,9 @@ static int structural_score(const RobotState *robot)
     score -= robot->heat / 2;
     if (robot->down) {
         score -= 45;
+    }
+    if (robot->head_detached) {
+        score -= 180;
     }
     return score;
 }
@@ -3524,6 +3782,184 @@ static int getup_next_state(int state)
     }
 }
 
+static double part_support_quality(const RobotState *robot, BodyPart part)
+{
+    if (part < 0 || part >= PART_COUNT || robot->detached[part]) {
+        return 0.0;
+    }
+    return clamp_double((double)robot->integrity[part] /
+                            (double)part_initial[part],
+                        0.0, 1.0);
+}
+
+static int getup_support_mask_for_state(const RobotState *robot, int state)
+{
+    int mask = 0;
+
+    switch (state) {
+    case CFA_GETUP_ROLL_SIDE:
+        mask = CFA_GROUND_TORSO;
+        if (part_support_quality(robot, PART_L_ARM) > 0.0) {
+            mask |= CFA_GROUND_L_HAND;
+        }
+        if (part_support_quality(robot, PART_R_ARM) > 0.0) {
+            mask |= CFA_GROUND_R_HAND;
+        }
+        break;
+    case CFA_GETUP_BRACE_HAND:
+    case CFA_GETUP_PUSH_UP:
+        if (part_support_quality(robot, PART_L_ARM) > 0.0) {
+            mask |= CFA_GROUND_L_HAND;
+        }
+        if (part_support_quality(robot, PART_R_ARM) > 0.0) {
+            mask |= CFA_GROUND_R_HAND;
+        }
+        if (mask == 0) {
+            mask |= CFA_GETUP_LEG_SUPPORT;
+        }
+        break;
+    case CFA_GETUP_KNEE_UNDER:
+        if (part_support_quality(robot, PART_L_LEG) > 0.0) {
+            mask |= CFA_GROUND_L_KNEE | CFA_GROUND_L_FOOT;
+        }
+        if (part_support_quality(robot, PART_R_LEG) > 0.0) {
+            mask |= CFA_GROUND_R_KNEE | CFA_GROUND_R_FOOT;
+        }
+        if (mask == 0) {
+            mask = CFA_GETUP_HAND_SUPPORT;
+        }
+        break;
+    case CFA_GETUP_CROUCH:
+    case CFA_GETUP_STAND:
+    case CFA_GETUP_GUARD_RESET:
+        if (part_support_quality(robot, PART_L_LEG) > 0.0) {
+            mask |= CFA_GROUND_L_FOOT;
+        }
+        if (part_support_quality(robot, PART_R_LEG) > 0.0) {
+            mask |= CFA_GROUND_R_FOOT;
+        }
+        break;
+    default:
+        mask = robot->ground_contact_mask;
+        break;
+    }
+
+    return mask;
+}
+
+static double getup_support_quality(const RobotState *robot, int state,
+                                    int mask)
+{
+    double quality = 0.0;
+    double weight = 0.0;
+
+    if (mask & CFA_GROUND_L_HAND) {
+        quality += part_support_quality(robot, PART_L_ARM) * 0.50;
+        weight += 0.50;
+    }
+    if (mask & CFA_GROUND_R_HAND) {
+        quality += part_support_quality(robot, PART_R_ARM) * 0.50;
+        weight += 0.50;
+    }
+    if (mask & (CFA_GROUND_L_KNEE | CFA_GROUND_L_SHIN | CFA_GROUND_L_FOOT)) {
+        quality += part_support_quality(robot, PART_L_LEG) * 0.72;
+        weight += 0.72;
+    }
+    if (mask & (CFA_GROUND_R_KNEE | CFA_GROUND_R_SHIN | CFA_GROUND_R_FOOT)) {
+        quality += part_support_quality(robot, PART_R_LEG) * 0.72;
+        weight += 0.72;
+    }
+    if (mask & CFA_GROUND_TORSO) {
+        quality += part_support_quality(robot, PART_TORSO) * 0.28;
+        weight += 0.28;
+    }
+
+    if (weight <= 0.0) {
+        return 0.0;
+    }
+    quality /= weight;
+    if ((state == CFA_GETUP_BRACE_HAND || state == CFA_GETUP_PUSH_UP) &&
+        (mask & CFA_GETUP_HAND_SUPPORT) == 0) {
+        quality *= 0.48;
+    }
+    if ((state == CFA_GETUP_CROUCH || state == CFA_GETUP_STAND) &&
+        (mask & CFA_GETUP_FOOT_SUPPORT) == 0) {
+        quality *= 0.35;
+    }
+    return clamp_double(quality, 0.0, 1.0);
+}
+
+static double opponent_ground_pressure(const Fight *fight, int side)
+{
+    const RobotState *robot = &fight->robot[side];
+    const RobotState *opponent = &fight->robot[side == 0 ? 1 : 0];
+    double dx = opponent->x - robot->x;
+    double dy = opponent->y - robot->y;
+    double center = sqrt(dx * dx + dy * dy);
+
+    if (opponent->down) {
+        return 0.0;
+    }
+    return clamp_double((1.05 - center) / 0.78, 0.0, 1.0);
+}
+
+static double apply_getup_ground_force(Fight *fight, int side, int state,
+                                       char *out, size_t out_size)
+{
+    RobotState *robot = &fight->robot[side];
+    double away_x;
+    double away_y;
+    double pressure = opponent_ground_pressure(fight, side);
+    int mask = getup_support_mask_for_state(robot, state);
+    double quality = getup_support_quality(robot, state, mask);
+    double stage_lift;
+    double lateral_roll;
+
+    vector_to_opponent(fight, side, &away_x, &away_y);
+    away_x = -away_x;
+    away_y = -away_y;
+
+    stage_lift = 0.04;
+    if (state == CFA_GETUP_BRACE_HAND) {
+        stage_lift = 0.13;
+    } else if (state == CFA_GETUP_KNEE_UNDER) {
+        stage_lift = 0.18;
+    } else if (state == CFA_GETUP_PUSH_UP) {
+        stage_lift = 0.27;
+    } else if (state == CFA_GETUP_CROUCH) {
+        stage_lift = 0.22;
+    } else if (state == CFA_GETUP_STAND || state == CFA_GETUP_GUARD_RESET) {
+        stage_lift = 0.16;
+    }
+
+    lateral_roll = (side == 0 ? -1.0 : 1.0) *
+                   clamp_double((1.0 - quality) * 0.10 + pressure * 0.05,
+                                0.0, 0.16);
+    robot->getup_support_mask = mask;
+    robot->ground_contact_mask |= mask;
+    robot->getup_pressure = pressure;
+    robot->getup_force_x = away_x * stage_lift * (0.42 + quality * 0.46);
+    robot->getup_force_y = away_y * stage_lift * (0.42 + quality * 0.46);
+    robot->getup_force_z = stage_lift * quality * (1.0 - pressure * 0.32);
+    robot->grounded_roll = lateral_roll;
+    robot->grounded_defense = clamp_double(0.24 + quality * 0.46 +
+                                               pressure * 0.10,
+                                           0.0, 1.0);
+
+    robot->vx += robot->getup_force_x * 0.22;
+    robot->vy += robot->getup_force_y * 0.22;
+    robot->angular_velocity =
+        clamp_abs(robot->angular_velocity + lateral_roll * 0.30,
+                  ROBOT_MAX_ANGULAR_SPEED_RAD_PER_TURN);
+    if (quality < 0.24 || pressure > 0.82) {
+        robot->getup_blocked = 1;
+        append_text(out, out_size,
+                    "R%d GETUP blocked support %.0f%% pressure %.0f%%. ",
+                    side + 1, quality * 100.0, pressure * 100.0);
+    }
+    return quality;
+}
+
 static void stand_robot(Fight *fight, int side, char *out, size_t out_size)
 {
     RobotState *robot = &fight->robot[side];
@@ -3531,6 +3967,7 @@ static void stand_robot(Fight *fight, int side, char *out, size_t out_size)
     int duration;
     int chance;
     int roll;
+    double support_quality;
 
     if (!robot->down) {
         robot->guard = 1;
@@ -3564,12 +4001,19 @@ static void stand_robot(Fight *fight, int side, char *out, size_t out_size)
     }
 
     state = robot->getup_state;
+    robot->getup_blocked = 0;
     duration = getup_stage_duration(fight, side, state);
+    support_quality = apply_getup_ground_force(fight, side, state, out,
+                                               out_size);
+    if (support_quality < 0.34 &&
+        (state == CFA_GETUP_BRACE_HAND || state == CFA_GETUP_PUSH_UP ||
+         state == CFA_GETUP_STAND)) {
+        duration = clamp_int(duration + 1, 1, 7);
+    }
     if (robot->getup_total != duration) {
         robot->getup_total = duration;
         robot->getup_ticks = 0;
     }
-    robot->getup_blocked = 0;
     robot->getup_ticks++;
     robot->getup_progress =
         clamp_double((double)robot->getup_ticks / (double)duration,
@@ -3580,10 +4024,14 @@ static void stand_robot(Fight *fight, int side, char *out, size_t out_size)
                     side + 1, getup_state_name(state),
                     robot->getup_progress * 100.0);
         if (state == CFA_GETUP_BRACE_HAND || state == CFA_GETUP_PUSH_UP) {
-            robot->ground_contact_mask |= CFA_GROUND_L_HAND | CFA_GROUND_R_HAND;
+            robot->ground_contact_mask |= robot->getup_support_mask != 0 ?
+                                          robot->getup_support_mask :
+                                          CFA_GROUND_L_HAND | CFA_GROUND_R_HAND;
         }
         if (state == CFA_GETUP_KNEE_UNDER || state == CFA_GETUP_CROUCH) {
-            robot->ground_contact_mask |= CFA_GROUND_L_KNEE | CFA_GROUND_R_KNEE |
+            robot->ground_contact_mask |= robot->getup_support_mask != 0 ?
+                                          robot->getup_support_mask :
+                                          CFA_GROUND_L_KNEE | CFA_GROUND_R_KNEE |
                                           CFA_GROUND_L_FOOT | CFA_GROUND_R_FOOT;
         }
         return;
@@ -3601,6 +4049,8 @@ static void stand_robot(Fight *fight, int side, char *out, size_t out_size)
 
     chance = 54 + robot->stability / 3 - robot->heat / 12 -
              robot->shock / 18;
+    chance += (int)(support_quality * 18.0) - 8;
+    chance -= (int)(robot->getup_pressure * 16.0);
     if (robot->ground_slide > 0.08) {
         chance -= 8;
     }
@@ -3672,6 +4122,37 @@ static void apply_motion_command(Fight *fight, int side, const Intent *intent,
 
     if (intent->command.id == CMD_GUARD) {
         robot->guard = 1;
+        if (robot->down) {
+            double nx;
+            double ny;
+            double side_roll = side == 0 ? -1.0 : 1.0;
+
+            vector_to_opponent(fight, side, &nx, &ny);
+            robot->grounded_defense = clamp_double(
+                0.40 + part_support_quality(robot, PART_TORSO) * 0.18 +
+                    fmax(part_support_quality(robot, PART_L_ARM),
+                         part_support_quality(robot, PART_R_ARM)) * 0.26,
+                0.15, 0.86);
+            robot->grounded_roll = side_roll *
+                                   clamp_double(0.04 +
+                                                    robot->grounded_defense * 0.10,
+                                                0.04, 0.16);
+            robot->ground_contact_mask |=
+                (part_support_quality(robot, PART_L_ARM) > 0.0 ?
+                    CFA_GROUND_L_HAND : 0) |
+                (part_support_quality(robot, PART_R_ARM) > 0.0 ?
+                    CFA_GROUND_R_HAND : 0) |
+                CFA_GROUND_TORSO;
+            robot->vx -= nx * 0.025;
+            robot->vy -= ny * 0.025;
+            robot->angular_velocity =
+                clamp_abs(robot->angular_velocity + robot->grounded_roll * 0.26,
+                          ROBOT_MAX_ANGULAR_SPEED_RAD_PER_TURN);
+            append_text(out, out_size,
+                        "R%d GROUNDED GUARD covers %.0f%% and rolls off-line. ",
+                        side + 1, robot->grounded_defense * 100.0);
+            return;
+        }
         robot->stability = clamp_int(robot->stability + 2, 0, max_stability(robot));
         append_text(out, out_size, "R%d GUARD braces physical frame. ", side + 1);
         return;
@@ -4632,6 +5113,33 @@ static void physics_step(Fight *fight, char *out, size_t out_size)
         fight->clinch = 0;
         append_text(out, out_size, "clinch breaks by physical separation. ");
     }
+    if (fight->clinch) {
+        RobotState *a = &fight->robot[0];
+        RobotState *b = &fight->robot[1];
+        double nx;
+        double ny;
+        double pressure;
+
+        if (a->down || b->down || !mode_available(a, USE_ANY_ARM) ||
+            !mode_available(b, USE_ANY_ARM)) {
+            fight->clinch = 0;
+            append_text(out, out_size,
+                        "clinch breaks as support frame collapses. ");
+        } else {
+            vector_to_opponent(fight, 0, &nx, &ny);
+            pressure = clamp_double((a->clinch_leverage +
+                                     b->clinch_leverage) * 0.5,
+                                    0.10, 0.80);
+            a->vx += nx * pressure * 0.018;
+            a->vy += ny * pressure * 0.018;
+            b->vx -= nx * pressure * 0.018;
+            b->vy -= ny * pressure * 0.018;
+            a->clinch_pressure = fmax(a->clinch_pressure,
+                                      b->clinch_leverage * 0.62);
+            b->clinch_pressure = fmax(b->clinch_pressure,
+                                      a->clinch_leverage * 0.62);
+        }
+    }
 
     for (i = 0; i < 2; i++) {
         double nx;
@@ -4895,6 +5403,10 @@ static void apply_knockback(Fight *fight, int attacker_side, BodyPart target,
         attacker->angular_velocity =
             clamp_abs(attacker->angular_velocity - yaw_impulse * 0.35,
                       ROBOT_MAX_ANGULAR_SPEED_RAD_PER_TURN);
+        if (target == PART_HEAD) {
+            detach_head_for_knockout(defender, nx, ny, dv, yaw_impulse,
+                                     raw_damage, contact, out, out_size);
+        }
     }
     recoil_scale = clamp_double(target_mass / fmax(2.0, strike_mass + target_mass) * 0.55,
                                 0.18, 0.52);
@@ -4990,6 +5502,110 @@ static void apply_knockback(Fight *fight, int attacker_side, BodyPart target,
     }
 }
 
+static double planted_support_score(const RobotState *robot)
+{
+    double score = 0.0;
+
+    if (foot_can_support(robot, FOOT_LEFT)) {
+        score += 0.50;
+    }
+    if (foot_can_support(robot, FOOT_RIGHT)) {
+        score += 0.50;
+    }
+    if (robot->balance_state == CFA_BALANCE_EDGE) {
+        score *= 0.72;
+    } else if (robot->balance_state == CFA_BALANCE_OUTSIDE) {
+        score *= 0.42;
+    }
+    return clamp_double(score, 0.0, 1.0);
+}
+
+static double clinch_leverage_score(const Fight *fight, int attacker_side)
+{
+    const RobotState *attacker = &fight->robot[attacker_side];
+    const RobotState *defender = &fight->robot[attacker_side == 0 ? 1 : 0];
+    double arm_quality =
+        (part_support_quality(attacker, PART_L_ARM) +
+         part_support_quality(attacker, PART_R_ARM)) * 0.5;
+    double foot_score = planted_support_score(attacker);
+    double defender_bad_balance =
+        clamp_double((100.0 - (double)defender->stability) / 100.0,
+                     0.0, 1.0);
+    double wall_bonus = wall_gap(defender) < 0.24 ? 0.12 : 0.0;
+    double heat_penalty = (double)attacker->heat / 360.0;
+
+    return clamp_double(arm_quality * 0.42 + foot_score * 0.30 +
+                            defender_bad_balance * 0.22 + wall_bonus -
+                            heat_penalty,
+                        0.0, 1.0);
+}
+
+static int prepare_throw_mechanics(Fight *fight, int attacker_side,
+                                   char *out, size_t out_size)
+{
+    int defender_side = attacker_side == 0 ? 1 : 0;
+    RobotState *attacker = &fight->robot[attacker_side];
+    RobotState *defender = &fight->robot[defender_side];
+    double nx;
+    double ny;
+    double leverage = clinch_leverage_score(fight, attacker_side);
+    double defender_leverage = clinch_leverage_score(fight, defender_side);
+    int chance;
+    int roll;
+    double torque;
+
+    vector_to_opponent(fight, attacker_side, &nx, &ny);
+    chance = clamp_int(36 + (int)(leverage * 62.0) -
+                           (int)(defender_leverage * 12.0) -
+                           attacker->shock / 10,
+                       12, 92);
+    roll = rng_range(&fight->rng, 1, 100);
+    attacker->clinch_leverage = leverage;
+    defender->clinch_pressure = clamp_double(leverage * 0.86, 0.0, 1.0);
+    torque = (attacker_side == 0 ? 1.0 : -1.0) *
+             clamp_double((leverage - defender_leverage * 0.35) * 0.42,
+                          0.04, 0.38);
+    attacker->throw_torque = torque * 0.55;
+    defender->throw_torque = torque;
+
+    if (roll > chance) {
+        fight->clinch = 0;
+        attacker->stability = clamp_int(attacker->stability -
+                                            clamp_int(8 + (int)((1.0 - leverage) * 18.0),
+                                                      8, 24),
+                                        0, max_stability(attacker));
+        attacker->vx -= nx * 0.09;
+        attacker->vy -= ny * 0.09;
+        attacker->angular_velocity =
+            clamp_abs(attacker->angular_velocity - torque * 0.65,
+                      ROBOT_MAX_ANGULAR_SPEED_RAD_PER_TURN);
+        set_stagger(attacker, ROBOT_STAGGER_STUMBLE, -nx, -ny,
+                    out, out_size);
+        append_text(out, out_size,
+                    "R%d THROW fails leverage %.0f%% (roll %d/%d). ",
+                    attacker_side + 1, leverage * 100.0, roll, chance);
+        return 0;
+    }
+
+    defender->center_mass_x += nx * clamp_double(0.06 + leverage * 0.14,
+                                                 0.06, 0.20);
+    defender->center_mass_y += ny * clamp_double(0.06 + leverage * 0.14,
+                                                 0.06, 0.20);
+    defender->vx += nx * clamp_double(0.08 + leverage * 0.20, 0.08, 0.28);
+    defender->vy += ny * clamp_double(0.08 + leverage * 0.20, 0.08, 0.28);
+    defender->angular_velocity =
+        clamp_abs(defender->angular_velocity + torque,
+                  ROBOT_MAX_ANGULAR_SPEED_RAD_PER_TURN);
+    defender->stability =
+        clamp_int(defender->stability - clamp_int(10 + (int)(leverage * 28.0),
+                                                  10, 38),
+                  0, max_stability(defender));
+    append_text(out, out_size,
+                "R%d THROW loads pivot torque %.0f%% (roll %d/%d). ",
+                attacker_side + 1, leverage * 100.0, roll, chance);
+    return 1;
+}
+
 static void resolve_clinch(Fight *fight, int attacker_side, int defender_side,
                            const Intent *intent, char *out, size_t out_size)
 {
@@ -5019,18 +5635,39 @@ static void resolve_clinch(Fight *fight, int attacker_side, int defender_side,
 
     if (roll <= accuracy) {
         int crush = rng_range(&fight->rng, 2, 6);
+        double leverage = clinch_leverage_score(fight, attacker_side);
+        double defender_leverage = clinch_leverage_score(fight, defender_side);
+        double nx;
+        double ny;
+        double push;
+
+        vector_to_opponent(fight, attacker_side, &nx, &ny);
+        push = clamp_double(0.035 + leverage * 0.085, 0.03, 0.13);
         fight->clinch = 1;
         attacker->vx *= 0.25;
         attacker->vy *= 0.25;
         defender->vx *= 0.25;
         defender->vy *= 0.25;
+        attacker->vx += nx * push * 0.36;
+        attacker->vy += ny * push * 0.36;
+        defender->vx += nx * push;
+        defender->vy += ny * push;
+        attacker->clinch_leverage = leverage;
+        defender->clinch_leverage = defender_leverage;
+        attacker->clinch_pressure = clamp_double(defender_leverage * 0.56, 0.0, 1.0);
+        defender->clinch_pressure = clamp_double(leverage * 0.72, 0.0, 1.0);
+        defender->angular_velocity =
+            clamp_abs(defender->angular_velocity +
+                          (attacker_side == 0 ? 1.0 : -1.0) * leverage * 0.055,
+                      ROBOT_MAX_ANGULAR_SPEED_RAD_PER_TURN);
         defender->stability -= 8 + crush;
         defender->shock += crush;
         defender->stability = clamp_int(defender->stability, 0,
                                         max_stability(defender));
         append_text(out, out_size,
-                    "R%d CLINCH attaches at %.2fm gap (roll %d/%d), crush %d. ",
-                    attacker_side + 1, gap, roll, accuracy, crush);
+                    "R%d CLINCH attaches at %.2fm gap (roll %d/%d), leverage %.0f%% crush %d. ",
+                    attacker_side + 1, gap, roll, accuracy,
+                    leverage * 100.0, crush);
     } else {
         append_text(out, out_size,
                     "R%d CLINCH misses latch timing (roll %d/%d). ",
@@ -5074,6 +5711,81 @@ static void mark_attack_miss_recovery(RobotState *attacker,
                 clamped * 100.0);
 }
 
+static int apply_grounded_defense(Fight *fight, int defender_side,
+                                  CommandId attack_id, BodyPart *target,
+                                  char *out, size_t out_size)
+{
+    RobotState *defender = &fight->robot[defender_side];
+    double arm_quality = fmax(part_support_quality(defender, PART_L_ARM),
+                              part_support_quality(defender, PART_R_ARM));
+    double leg_quality = fmax(part_support_quality(defender, PART_L_LEG),
+                              part_support_quality(defender, PART_R_LEG));
+    int chance;
+    int roll;
+    int reduction = 0;
+    double nx;
+    double ny;
+    double lateral;
+
+    if (!defender->down ||
+        !(attack_id == CMD_STOMP || attack_id == CMD_LOW_KICK ||
+          attack_id == CMD_HIGH_KICK || attack_id == CMD_KNEE)) {
+        return 0;
+    }
+
+    chance = 16 + (int)(arm_quality * 26.0) + (int)(leg_quality * 16.0);
+    if (defender->guard) {
+        chance += 18;
+    }
+    if (defender->getup_state == CFA_GETUP_ROLL_SIDE ||
+        defender->getup_state == CFA_GETUP_BRACE_HAND) {
+        chance += 10;
+    }
+    chance -= defender->shock / 10;
+    chance -= clamp_int((int)(defender->ground_slide * 18.0), 0, 12);
+    chance = clamp_int(chance, 6, 78);
+    roll = rng_range(&fight->rng, 1, 100);
+
+    vector_to_opponent(fight, defender_side, &nx, &ny);
+    lateral = defender_side == 0 ? -1.0 : 1.0;
+    defender->grounded_defense =
+        clamp_double((double)chance / 100.0, 0.0, 1.0);
+    defender->grounded_roll =
+        lateral * clamp_double(0.04 + defender->grounded_defense * 0.14,
+                               0.04, 0.18);
+    defender->ground_contact_mask |= CFA_GROUND_TORSO;
+
+    if (roll <= chance) {
+        BodyPart shield = guard_arm(defender);
+        reduction = clamp_int(28 + chance / 3, 28, 58);
+        defender->vx -= nx * (0.04 + leg_quality * 0.05);
+        defender->vy -= ny * (0.04 + leg_quality * 0.05);
+        defender->angular_velocity =
+            clamp_abs(defender->angular_velocity + defender->grounded_roll * 0.48,
+                      ROBOT_MAX_ANGULAR_SPEED_RAD_PER_TURN);
+        if (shield != PART_INVALID &&
+            (*target == PART_HEAD || *target == PART_TORSO)) {
+            *target = shield;
+            defender->ground_contact_mask |=
+                shield == PART_L_ARM ? CFA_GROUND_L_HAND : CFA_GROUND_R_HAND;
+        } else {
+            defender->ground_contact_mask |=
+                leg_quality > 0.0 ?
+                    (CFA_GROUND_L_FOOT | CFA_GROUND_R_FOOT) :
+                    (CFA_GROUND_L_HAND | CFA_GROUND_R_HAND);
+        }
+        append_text(out, out_size,
+                    "R%d grounded cover rolls the stomp line (roll %d/%d, reduce %d%%). ",
+                    defender_side + 1, roll, chance, reduction);
+    } else {
+        reduction = defender->guard ? 12 : 0;
+        append_text(out, out_size,
+                    "R%d grounded cover is late (roll %d/%d). ",
+                    defender_side + 1, roll, chance);
+    }
+    return reduction;
+}
+
 static void resolve_attack(Fight *fight, int attacker_side, const Intent *intent,
                            char *out, size_t out_size)
 {
@@ -5088,6 +5800,7 @@ static void resolve_attack(Fight *fight, int attacker_side, const Intent *intent
     int accuracy;
     int roll;
     int raw_damage;
+    int grounded_reduction = 0;
     BlockResult block;
     StrikeContact strike_contact;
 
@@ -5124,6 +5837,11 @@ static void resolve_attack(Fight *fight, int attacker_side, const Intent *intent
         return;
     }
 
+    if (intent->command.id == CMD_THROW &&
+        !prepare_throw_mechanics(fight, attacker_side, out, out_size)) {
+        return;
+    }
+
     if (gap < spec->min_gap_m || gap > spec->max_gap_m) {
         double range_mid = (spec->min_gap_m + spec->max_gap_m) * 0.5;
         double miss_severity = clamp_double(fabs(gap - range_mid) /
@@ -5139,6 +5857,13 @@ static void resolve_attack(Fight *fight, int attacker_side, const Intent *intent
     }
 
     target = select_target(defender, intent->command, spec);
+    if (defender->down && intent->command.id == CMD_STOMP &&
+        intent->command.target == PART_INVALID) {
+        target = rng_range(&fight->rng, 0, 3) == 0 ? PART_HEAD : PART_TORSO;
+    }
+    grounded_reduction = apply_grounded_defense(fight, defender_side,
+                                                intent->command.id, &target,
+                                                out, out_size);
     block = attempt_block(fight, defender_side, target, spec,
                           intent->command.id, gap);
     strike_contact = find_strike_contact(fight, attacker_side,
@@ -5187,6 +5912,11 @@ static void resolve_attack(Fight *fight, int attacker_side, const Intent *intent
     }
     if (defender->down) {
         accuracy += intent->command.id == CMD_STOMP ? 24 : 10;
+        accuracy -= grounded_reduction / 3;
+        if (intent->command.id == CMD_STOMP &&
+            attacker->balance_state == CFA_BALANCE_OUTSIDE) {
+            accuracy -= 12;
+        }
     }
     if (attacker->shock > 60) {
         accuracy -= 8;
@@ -5234,6 +5964,10 @@ static void resolve_attack(Fight *fight, int attacker_side, const Intent *intent
     if (defender->down && intent->command.id == CMD_STOMP) {
         raw_damage += 4;
     }
+    if (grounded_reduction > 0) {
+        raw_damage = clamp_int(raw_damage * (100 - grounded_reduction) / 100,
+                               1, 80);
+    }
     raw_damage = clamp_int(raw_damage, 1, 80);
     if (strike_contact.hit && strike_contact.glancing) {
         double retained = strike_contact.guarded
@@ -5263,6 +5997,9 @@ static void resolve_attack(Fight *fight, int attacker_side, const Intent *intent
     }
     apply_damage(fight, defender_side, target, raw_damage, &block, out,
                  out_size);
+    if (strike_contact.hit && strike_contact.clearance_m < 98.0) {
+        set_recent_damage_site(defender, target, strike_contact.defender_point);
+    }
     apply_knockback(fight, attacker_side, target, raw_damage, spec,
                     &strike_contact, out, out_size);
     append_text(out, out_size, ". ");
@@ -5317,6 +6054,9 @@ static void print_status(const char *label, const RobotState *robot)
     }
     if (robot->detached[PART_R_LEG]) {
         printf(" -RL");
+    }
+    if (robot->head_detached) {
+        printf(" -HEAD");
     }
     printf("\n");
 }
@@ -5507,7 +6247,7 @@ static void copy_part_damage(CFAPartDamage *snapshot,
     snapshot->scuff = clamp_int(robot->scuff[part], 0, 100);
     snapshot->dent = clamp_int(robot->dent[part], 0, 100);
     snapshot->exposed = clamp_int(lost * 100 / part_initial[part], 0, 100);
-    if (robot->detached[part]) {
+    if (robot->detached[part] || (part == PART_HEAD && robot->head_detached)) {
         snapshot->exposed = 100;
     }
 }
@@ -5610,6 +6350,30 @@ static void copy_robot_snapshot(CFARobotSnapshot *snapshot,
     snapshot->getUpState = robot->getup_state;
     snapshot->getUpProgress = robot->getup_progress;
     snapshot->getUpBlocked = robot->getup_blocked;
+    snapshot->getUpForceX = robot->getup_force_x;
+    snapshot->getUpForceY = robot->getup_force_y;
+    snapshot->getUpForceZ = robot->getup_force_z;
+    snapshot->getUpSupportMask = robot->getup_support_mask;
+    snapshot->getUpPressure = robot->getup_pressure;
+    snapshot->groundedDefense = robot->grounded_defense;
+    snapshot->groundedRoll = robot->grounded_roll;
+    snapshot->clinchLeverage = robot->clinch_leverage;
+    snapshot->clinchPressure = robot->clinch_pressure;
+    snapshot->throwTorque = robot->throw_torque;
+    snapshot->recentDamagePart = robot->recent_damage_part;
+    snapshot->recentDamageRaw = robot->recent_damage_raw;
+    snapshot->recentDamageNet = robot->recent_damage_net;
+    snapshot->recentDamageX = robot->recent_damage_x;
+    snapshot->recentDamageY = robot->recent_damage_y;
+    snapshot->recentDamageZ = robot->recent_damage_z;
+    snapshot->headDetached = robot->head_detached;
+    snapshot->headDetachX = robot->head_detach_x;
+    snapshot->headDetachY = robot->head_detach_y;
+    snapshot->headDetachZ = robot->head_detach_z;
+    snapshot->headDetachVX = robot->head_detach_vx;
+    snapshot->headDetachVY = robot->head_detach_vy;
+    snapshot->headDetachVZ = robot->head_detach_vz;
+    snapshot->headDetachSpin = robot->head_detach_spin;
     copy_part_damage(&snapshot->headDamage, robot, PART_HEAD);
     copy_part_damage(&snapshot->torsoDamage, robot, PART_TORSO);
     copy_part_damage(&snapshot->leftArmDamage, robot, PART_L_ARM);
