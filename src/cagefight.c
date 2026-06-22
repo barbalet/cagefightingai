@@ -222,6 +222,20 @@ typedef enum {
     METRIC_OPP_STABILITY,
     METRIC_SELF_DOWN,
     METRIC_OPP_DOWN,
+    METRIC_SELF_GUARD,
+    METRIC_OPP_GUARD,
+    METRIC_SELF_GETUP,
+    METRIC_OPP_GETUP,
+    METRIC_SELF_GETUP_PRESSURE,
+    METRIC_OPP_GETUP_PRESSURE,
+    METRIC_SELF_BALANCE_OFFSET,
+    METRIC_OPP_BALANCE_OFFSET,
+    METRIC_SELF_WALL_PRESSURE,
+    METRIC_OPP_WALL_PRESSURE,
+    METRIC_SELF_CLINCH_PRESSURE,
+    METRIC_OPP_CLINCH_PRESSURE,
+    METRIC_SELF_RECENT_DAMAGE,
+    METRIC_OPP_RECENT_DAMAGE,
     METRIC_DISTANCE,
     METRIC_CENTER_DISTANCE,
     METRIC_WALL
@@ -1099,8 +1113,50 @@ static int parse_condition_tokens(char **tokens, int start, int end,
             condition->metric = self ? METRIC_SELF_STABILITY : METRIC_OPP_STABILITY;
             return 1;
         }
+        if (equals_ci(tokens[start + 1], "BALANCE_OFFSET") ||
+            equals_ci(tokens[start + 1], "COM_OFFSET") ||
+            equals_ci(tokens[start + 1], "LEAN")) {
+            condition->metric = self ? METRIC_SELF_BALANCE_OFFSET :
+                                       METRIC_OPP_BALANCE_OFFSET;
+            return 1;
+        }
         if (equals_ci(tokens[start + 1], "DOWN") || equals_ci(tokens[start + 1], "FALLEN")) {
             condition->metric = self ? METRIC_SELF_DOWN : METRIC_OPP_DOWN;
+            return 1;
+        }
+        if (equals_ci(tokens[start + 1], "GUARD") ||
+            equals_ci(tokens[start + 1], "GUARDING")) {
+            condition->metric = self ? METRIC_SELF_GUARD : METRIC_OPP_GUARD;
+            return 1;
+        }
+        if (equals_ci(tokens[start + 1], "GETUP") ||
+            equals_ci(tokens[start + 1], "GET_UP")) {
+            condition->metric = self ? METRIC_SELF_GETUP : METRIC_OPP_GETUP;
+            return 1;
+        }
+        if (equals_ci(tokens[start + 1], "GETUP_PRESSURE") ||
+            equals_ci(tokens[start + 1], "GET_UP_PRESSURE") ||
+            equals_ci(tokens[start + 1], "GROUND_PRESSURE")) {
+            condition->metric = self ? METRIC_SELF_GETUP_PRESSURE :
+                                       METRIC_OPP_GETUP_PRESSURE;
+            return 1;
+        }
+        if (equals_ci(tokens[start + 1], "WALL_PRESSURE") ||
+            equals_ci(tokens[start + 1], "CAGE_PRESSURE")) {
+            condition->metric = self ? METRIC_SELF_WALL_PRESSURE :
+                                       METRIC_OPP_WALL_PRESSURE;
+            return 1;
+        }
+        if (equals_ci(tokens[start + 1], "CLINCH_PRESSURE") ||
+            equals_ci(tokens[start + 1], "GRAPPLE_PRESSURE")) {
+            condition->metric = self ? METRIC_SELF_CLINCH_PRESSURE :
+                                       METRIC_OPP_CLINCH_PRESSURE;
+            return 1;
+        }
+        if (equals_ci(tokens[start + 1], "RECENT_DAMAGE") ||
+            equals_ci(tokens[start + 1], "DAMAGE_PULSE")) {
+            condition->metric = self ? METRIC_SELF_RECENT_DAMAGE :
+                                       METRIC_OPP_RECENT_DAMAGE;
             return 1;
         }
         if (self && (equals_ci(tokens[start + 1], "WALL") || equals_ci(tokens[start + 1], "CAGE"))) {
@@ -3185,6 +3241,34 @@ static double metric_value(const Condition *condition, const Fight *fight,
         return self->down ? 1.0 : 0.0;
     case METRIC_OPP_DOWN:
         return opp->down ? 1.0 : 0.0;
+    case METRIC_SELF_GUARD:
+        return self->guard ? 1.0 : 0.0;
+    case METRIC_OPP_GUARD:
+        return opp->guard ? 1.0 : 0.0;
+    case METRIC_SELF_GETUP:
+        return (double)self->getup_state;
+    case METRIC_OPP_GETUP:
+        return (double)opp->getup_state;
+    case METRIC_SELF_GETUP_PRESSURE:
+        return self->getup_pressure;
+    case METRIC_OPP_GETUP_PRESSURE:
+        return opp->getup_pressure;
+    case METRIC_SELF_BALANCE_OFFSET:
+        return fabs(self->balance_offset);
+    case METRIC_OPP_BALANCE_OFFSET:
+        return fabs(opp->balance_offset);
+    case METRIC_SELF_WALL_PRESSURE:
+        return self->wall_impulse + self->wall_flex;
+    case METRIC_OPP_WALL_PRESSURE:
+        return opp->wall_impulse + opp->wall_flex;
+    case METRIC_SELF_CLINCH_PRESSURE:
+        return self->clinch_pressure;
+    case METRIC_OPP_CLINCH_PRESSURE:
+        return opp->clinch_pressure;
+    case METRIC_SELF_RECENT_DAMAGE:
+        return (double)(self->recent_damage_raw + self->recent_damage_net);
+    case METRIC_OPP_RECENT_DAMAGE:
+        return (double)(opp->recent_damage_raw + opp->recent_damage_net);
     case METRIC_DISTANCE:
         return surface_gap(fight);
     case METRIC_CENTER_DISTANCE:
@@ -6019,6 +6103,71 @@ static void resolve_attack(Fight *fight, int attacker_side, const Intent *intent
     evaluate_defeat(defender);
 }
 
+static void append_robot_commentary(const Fight *fight, int side,
+                                    char *out, size_t out_size)
+{
+    const RobotState *robot = &fight->robot[side];
+    const char *label = side == 0 ? "R1" : "R2";
+
+    if (robot->head_detached) {
+        append_text(out, out_size,
+                    "%s critical head damage: detached-head knockout. ",
+                    label);
+        return;
+    }
+    if (robot->block_success) {
+        append_text(out, out_size, "%s blocked %d through %s guard. ",
+                    label, robot->block_amount, part_name(robot->block_arm));
+    } else if (robot->block_active) {
+        append_text(out, out_size, "%s guard tracks the incoming line. ",
+                    label);
+    }
+    if (robot->parry_active) {
+        append_text(out, out_size, "%s parries and redirects momentum. ",
+                    label);
+    }
+    if (robot->stagger_state > 0 && robot->stagger_progress < 0.95) {
+        append_text(out, out_size, "%s staggered %.0f%% off balance. ",
+                    label, robot->stagger_progress * 100.0);
+    }
+    if (robot->wall_impulse > 0.10) {
+        append_text(out, out_size,
+                    "%s driven against the cage, impulse %.2f. ",
+                    label, robot->wall_impulse);
+    }
+    if (robot->ground_impact > 0.16) {
+        append_text(out, out_size,
+                    "%s hard knockdown on %s, slide %.2fm/t. ",
+                    label, part_name(robot->ground_impact_part),
+                    robot->ground_slide);
+    }
+    if (robot->getup_state == CFA_GETUP_GUARD_RESET &&
+        robot->getup_progress > 0.45 && !robot->down) {
+        append_text(out, out_size, "%s back to guard after recovery. ",
+                    label);
+    } else if (robot->getup_state > CFA_GETUP_NONE && robot->down) {
+        append_text(out, out_size,
+                    "%s get-up uses support mask %d under %.0f%% pressure. ",
+                    label, robot->getup_support_mask,
+                    robot->getup_pressure * 100.0);
+    }
+    if (robot->recent_damage_part != PART_INVALID &&
+        robot->recent_damage_ticks > 0 &&
+        robot->recent_damage_raw + robot->recent_damage_net > 18) {
+        append_text(out, out_size,
+                    "%s visible %s damage pulse raw %d net %d. ",
+                    label, part_name(robot->recent_damage_part),
+                    robot->recent_damage_raw, robot->recent_damage_net);
+    }
+}
+
+static void append_commentary_cues(const Fight *fight, char *out,
+                                   size_t out_size)
+{
+    append_robot_commentary(fight, 0, out, out_size);
+    append_robot_commentary(fight, 1, out, out_size);
+}
+
 #ifndef CFA_NO_CLI_MAIN
 static void print_status(const char *label, const RobotState *robot)
 {
@@ -6134,6 +6283,7 @@ static BoutResult run_bout(const Program *left, const Program *right,
                            event, sizeof(event));
         }
         physics_step(&fight, event, sizeof(event));
+        append_commentary_cues(&fight, event, sizeof(event));
 
         if (verbose) {
             printf("T%03d gap%.2f center%.2f C%d | R1 %-10s R2 %-10s | %s\n",
@@ -6581,6 +6731,7 @@ int cfa_bout_step(CFABout *bout, CFATurnSnapshot *snapshot)
                        &intent[attack_order[1]], event, sizeof(event));
     }
     physics_step(&bout->fight, event, sizeof(event));
+    append_commentary_cues(&bout->fight, event, sizeof(event));
 
     bout->last_intent[0] = intent[0];
     bout->last_intent[1] = intent[1];
