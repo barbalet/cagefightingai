@@ -6439,18 +6439,9 @@ static BoutResult run_bout(const Program *left, const Program *right,
         result.turns = MAX_TURNS;
         result.score[0] = structural_score(&fight.robot[0]);
         result.score[1] = structural_score(&fight.robot[1]);
-        if (result.score[0] > result.score[1]) {
-            result.winner = 0;
-            copy_text(result.method, sizeof(result.method),
-                      "decision by remaining structure and posture");
-        } else if (result.score[1] > result.score[0]) {
-            result.winner = 1;
-            copy_text(result.method, sizeof(result.method),
-                      "decision by remaining structure and posture");
-        } else {
-            result.winner = -1;
-            copy_text(result.method, sizeof(result.method), "draw by equal score");
-        }
+        result.winner = -1;
+        copy_text(result.method, sizeof(result.method),
+                  "time limit expired without knockout");
     } else {
         result.score[0] = structural_score(&fight.robot[0]);
         result.score[1] = structural_score(&fight.robot[1]);
@@ -6675,19 +6666,9 @@ static void finish_bout(CFABout *bout)
         return;
     }
 
-    if (bout->score[0] > bout->score[1]) {
-        bout->winner = 0;
-        copy_text(bout->result_method, sizeof(bout->result_method),
-                  "decision by remaining structure and posture");
-    } else if (bout->score[1] > bout->score[0]) {
-        bout->winner = 1;
-        copy_text(bout->result_method, sizeof(bout->result_method),
-                  "decision by remaining structure and posture");
-    } else {
-        bout->winner = -1;
-        copy_text(bout->result_method, sizeof(bout->result_method),
-                  "draw by equal score");
-    }
+    bout->winner = -1;
+    copy_text(bout->result_method, sizeof(bout->result_method),
+              "time limit expired without knockout");
 }
 
 static void fill_snapshot(const CFABout *bout, CFATurnSnapshot *snapshot)
@@ -7045,11 +7026,11 @@ static int run_tournament(int argc, char **argv)
                 if (result_a.winner == 0) {
                     wins[i]++;
                     losses[j]++;
-                    stoppages[i] += strstr(result_a.method, "decision") == NULL;
+                    stoppages[i]++;
                 } else if (result_a.winner == 1) {
                     wins[j]++;
                     losses[i]++;
-                    stoppages[j] += strstr(result_a.method, "decision") == NULL;
+                    stoppages[j]++;
                 } else {
                     draws[i]++;
                     draws[j]++;
@@ -7062,11 +7043,11 @@ static int run_tournament(int argc, char **argv)
                 if (result_b.winner == 0) {
                     wins[j]++;
                     losses[i]++;
-                    stoppages[j] += strstr(result_b.method, "decision") == NULL;
+                    stoppages[j]++;
                 } else if (result_b.winner == 1) {
                     wins[i]++;
                     losses[j]++;
-                    stoppages[i] += strstr(result_b.method, "decision") == NULL;
+                    stoppages[i]++;
                 } else {
                     draws[i]++;
                     draws[j]++;
