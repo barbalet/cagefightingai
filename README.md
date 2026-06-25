@@ -110,6 +110,8 @@ Distances are continuous meters:
 
 No-overlap behavior is enforced by the contact solver. When center distance falls below `2 * ROBOT_RADIUS_M`, the bodies are separated along the collision normal and their velocities are adjusted. High relative contact velocity adds shock and stability loss.
 
+Persistent clinch or contact-lock is also timed. If the robots remain stuck together for `FORCED_MOVE_APART` seconds, currently `2.0`, the simulation clears clinch pressure and forces both bodies to step and impulse apart.
+
 ## Robot Operating System Command Surface
 
 Command programs use `.cfos` files. The format supports unconditional cyclic commands and priority conditional rules.

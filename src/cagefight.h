@@ -14,6 +14,7 @@ extern "C" {
 #define CFA_MAX_COMMAND_NAME 24
 #define CFA_MAX_TURNS 240
 #define CFA_MAX_CAPSULES 14
+#define FORCED_MOVE_APART 2.0
 
 typedef struct CFABout CFABout;
 

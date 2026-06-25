@@ -146,6 +146,10 @@
 #define ROBOT_MASS_KG 118.0
 #define FRICTION 0.82
 #define CLINCH_BREAK_GAP_M 0.34
+#define CFA_SECONDS_PER_TURN 0.48
+#define CFA_PHYSICS_STEPS_PER_TURN 2.0
+#define FORCED_MOVE_APART_RELEASE_GAP_M 0.38
+#define FORCED_MOVE_APART_IMPULSE_M 0.34
 #define FOOT_LEFT 0
 #define FOOT_RIGHT 1
 #define FOOT_NONE -1
@@ -416,6 +420,7 @@ typedef struct {
 typedef struct {
     RobotState robot[2];
     int clinch;
+    int stuck_ticks;
     uint32_t rng;
 } Fight;
 
@@ -2688,6 +2693,7 @@ static void init_fight(Fight *fight, uint32_t seed)
     init_robot(&fight->robot[0], 0);
     init_robot(&fight->robot[1], 1);
     fight->clinch = 0;
+    fight->stuck_ticks = 0;
     fight->rng = seed == 0 ? 1u : seed;
 }
 
@@ -4311,6 +4317,7 @@ static void apply_motion_command(Fight *fight, int side, const Intent *intent,
         break;
     case CMD_RESET:
         fight->clinch = 0;
+        fight->stuck_ticks = 0;
         robot->retreating = 1;
         dir_x = -nx;
         dir_y = -ny;
@@ -4592,6 +4599,116 @@ static void resolve_robot_contact(Fight *fight, char *out, size_t out_size,
                 }
             }
         }
+    }
+}
+
+static int forced_move_apart_threshold_ticks(void)
+{
+    int ticks = (int)(FORCED_MOVE_APART * CFA_PHYSICS_STEPS_PER_TURN /
+                      CFA_SECONDS_PER_TURN + 0.999);
+    return ticks < 1 ? 1 : ticks;
+}
+
+static int fighters_are_stuck_together(const Fight *fight)
+{
+    const RobotState *a = &fight->robot[0];
+    const RobotState *b = &fight->robot[1];
+    double nx;
+    double ny;
+    double separating_speed;
+
+    if (a->defeated || b->defeated) {
+        return 0;
+    }
+    if (fight->clinch) {
+        return 1;
+    }
+    if (surface_gap(fight) > ROBOT_CONTACT_MARGIN_M * 1.5) {
+        return 0;
+    }
+
+    vector_to_opponent(fight, 0, &nx, &ny);
+    separating_speed = (b->vx - a->vx) * nx + (b->vy - a->vy) * ny;
+    return separating_speed <= 0.06;
+}
+
+static void clear_forced_clinch_pressure(Fight *fight)
+{
+    int i;
+
+    fight->clinch = 0;
+    for (i = 0; i < 2; i++) {
+        fight->robot[i].clinch_leverage = 0.0;
+        fight->robot[i].clinch_pressure = 0.0;
+        fight->robot[i].throw_torque = 0.0;
+    }
+}
+
+static void force_move_apart(Fight *fight, char *out, size_t out_size)
+{
+    RobotState *a = &fight->robot[0];
+    RobotState *b = &fight->robot[1];
+    double nx;
+    double ny;
+    double dist;
+    double desired_dist;
+    double correction;
+    double impulse_a;
+    double impulse_b;
+
+    vector_to_opponent(fight, 0, &nx, &ny);
+    dist = center_distance(fight);
+    desired_dist = robot_min_separation(a, b) + FORCED_MOVE_APART_RELEASE_GAP_M;
+    correction = desired_dist - dist;
+
+    clear_forced_clinch_pressure(fight);
+    fight->stuck_ticks = 0;
+
+    if (correction > 0.0) {
+        a->x -= nx * correction * 0.50;
+        a->y -= ny * correction * 0.50;
+        b->x += nx * correction * 0.50;
+        b->y += ny * correction * 0.50;
+    }
+
+    impulse_a = FORCED_MOVE_APART_IMPULSE_M * (a->down ? 0.55 : 1.0);
+    impulse_b = FORCED_MOVE_APART_IMPULSE_M * (b->down ? 0.55 : 1.0);
+    a->vx -= nx * impulse_a;
+    a->vy -= ny * impulse_a;
+    b->vx += nx * impulse_b;
+    b->vy += ny * impulse_b;
+    a->retreating = 1;
+    b->retreating = 1;
+
+    if (!a->down && mode_available(a, USE_ANY_LEG)) {
+        set_step_footwork(a, CMD_RESET, -nx, -ny, FORCED_MOVE_APART_IMPULSE_M);
+    }
+    if (!b->down && mode_available(b, USE_ANY_LEG)) {
+        set_step_footwork(b, CMD_RESET, nx, ny, FORCED_MOVE_APART_IMPULSE_M);
+    }
+
+    clamp_robot_speed(a);
+    clamp_robot_speed(b);
+    resolve_arena_contact(a, 0, out, out_size);
+    resolve_arena_contact(b, 1, out, out_size);
+    update_robot_balance(a);
+    update_robot_balance(b);
+
+    append_text(out, out_size,
+                "FORCED_MOVE_APART after %.1fs separates stuck contact. ",
+                FORCED_MOVE_APART);
+}
+
+static void update_forced_move_apart(Fight *fight, char *out, size_t out_size)
+{
+    if (!fighters_are_stuck_together(fight)) {
+        fight->stuck_ticks = 0;
+        return;
+    }
+
+    fight->stuck_ticks++;
+    if (fight->stuck_ticks >= forced_move_apart_threshold_ticks()) {
+        force_move_apart(fight, out, out_size);
     }
 }
 
@@ -5224,6 +5341,8 @@ static void physics_step(Fight *fight, char *out, size_t out_size)
                                       a->clinch_leverage * 0.62);
         }
     }
+
+    update_forced_move_apart(fight, out, out_size);
 
     for (i = 0; i < 2; i++) {
         double nx;
