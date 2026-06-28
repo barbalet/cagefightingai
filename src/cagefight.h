@@ -64,6 +64,15 @@ typedef struct {
 } CFACapsuleSnapshot;
 
 typedef struct {
+    double energy;
+    double cheer;
+    double clap;
+    double gasp;
+    double chant;
+    int chantSide;
+} CFACrowdSnapshot;
+
+typedef struct {
     /* Structural integrity points, mirrored by CFA_PART_* order. */
     int head;
     int torso;
@@ -232,6 +241,7 @@ typedef struct {
     char rightCommand[CFA_MAX_COMMAND_NAME];
     char event[CFA_MAX_EVENT];
     char resultMethod[CFA_MAX_METHOD];
+    CFACrowdSnapshot crowd;
     CFARobotSnapshot leftRobot;
     CFARobotSnapshot rightRobot;
 } CFATurnSnapshot;

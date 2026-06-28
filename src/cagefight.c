@@ -417,7 +417,17 @@ typedef struct {
 } RobotState;
 
 typedef struct {
+    double energy;
+    double cheer;
+    double clap;
+    double gasp;
+    double chant;
+    int chant_side;
+} CrowdState;
+
+typedef struct {
     RobotState robot[2];
+    CrowdState crowd;
     int clinch;
     int stuck_ticks;
     uint32_t rng;
@@ -688,6 +698,92 @@ static int rng_range(uint32_t *state, int min_value, int max_value)
     value = rng_next(state);
     span = max_value - min_value + 1;
     return min_value + (int)(value % (uint32_t)span);
+}
+
+static void init_crowd(CrowdState *crowd)
+{
+    crowd->energy = 0.16;
+    crowd->cheer = 0.0;
+    crowd->clap = 0.0;
+    crowd->gasp = 0.0;
+    crowd->chant = 0.0;
+    crowd->chant_side = -1;
+}
+
+static void decay_crowd(CrowdState *crowd)
+{
+    const double ambient = 0.16;
+
+    crowd->energy = ambient + (crowd->energy - ambient) * 0.965;
+    crowd->energy = clamp_double(crowd->energy, ambient, 1.0);
+    crowd->cheer *= 0.72;
+    crowd->clap *= 0.58;
+    crowd->gasp *= 0.50;
+    crowd->chant *= 0.82;
+    if (crowd->cheer < 0.015) {
+        crowd->cheer = 0.0;
+    }
+    if (crowd->clap < 0.015) {
+        crowd->clap = 0.0;
+    }
+    if (crowd->gasp < 0.015) {
+        crowd->gasp = 0.0;
+    }
+    if (crowd->chant < 0.05) {
+        crowd->chant = 0.0;
+        crowd->chant_side = -1;
+    }
+}
+
+static void crowd_add(CrowdState *crowd, double energy, double cheer,
+                      double clap, double gasp, double chant, int chant_side)
+{
+    crowd->energy = clamp_double(crowd->energy + energy, 0.0, 1.0);
+    crowd->cheer = clamp_double(crowd->cheer + cheer, 0.0, 1.0);
+    crowd->clap = clamp_double(crowd->clap + clap, 0.0, 1.0);
+    crowd->gasp = clamp_double(crowd->gasp + gasp, 0.0, 1.0);
+    if (chant_side >= 0 && chant > 0.0) {
+        crowd->chant = clamp_double(crowd->chant + chant, 0.0, 1.0);
+        crowd->chant_side = chant_side;
+    }
+}
+
+static void crowd_react_hit(Fight *fight, int attacker_side, BodyPart target,
+                            int raw_damage)
+{
+    double force = clamp_double((double)raw_damage / 80.0, 0.0, 1.0);
+    double head_bonus = target == PART_HEAD ? 0.05 : 0.0;
+    double body_bonus = target == PART_TORSO ? 0.025 : 0.0;
+    double chant = raw_damage >= 28 ? 0.10 + force * 0.10 : 0.0;
+
+    crowd_add(&fight->crowd,
+              0.035 + force * 0.10 + head_bonus,
+              0.035 + force * 0.12 + head_bonus,
+              0.030 + force * 0.10 + body_bonus,
+              raw_damage >= 42 ? 0.08 : 0.0,
+              chant,
+              attacker_side);
+}
+
+static void crowd_react_knockdown(Fight *fight, int acclaim_side,
+                                  BodyPart contact_part, int surprise)
+{
+    double head_bonus = contact_part == PART_HEAD ? 0.08 : 0.0;
+    double gasp = surprise ? 0.34 : head_bonus * 0.55;
+
+    crowd_add(&fight->crowd,
+              0.20 + head_bonus,
+              0.24 + head_bonus,
+              0.18,
+              gasp,
+              acclaim_side >= 0 ? 0.28 : 0.0,
+              acclaim_side);
+}
+
+static void crowd_react_head_detach(Fight *fight, int attacker_side)
+{
+    crowd_add(&fight->crowd, 0.55, 0.42, 0.32, 1.0, 0.44,
+              attacker_side);
 }
 
 static Vec3 vec3(double x, double y, double z)
@@ -2691,6 +2787,7 @@ static void init_fight(Fight *fight, uint32_t seed)
 {
     init_robot(&fight->robot[0], 0);
     init_robot(&fight->robot[1], 1);
+    init_crowd(&fight->crowd);
     fight->clinch = 0;
     fight->stuck_ticks = 0;
     fight->rng = seed == 0 ? 1u : seed;
@@ -4404,9 +4501,10 @@ static void resolve_capsule_arena_contact(RobotState *robot, int side,
     }
 }
 
-static void resolve_arena_contact(RobotState *robot, int side, char *out,
+static void resolve_arena_contact(Fight *fight, int side, char *out,
                                   size_t out_size)
 {
+    RobotState *robot = &fight->robot[side];
     double dist = sqrt(robot->x * robot->x + robot->y * robot->y);
     double max_dist = ARENA_RADIUS_M - robot_contact_radius(robot);
 
@@ -4437,12 +4535,16 @@ static void resolve_arena_contact(RobotState *robot, int side, char *out,
                             side + 1, outward_v);
                 if (!robot->down && outward_v > 0.34 &&
                     (robot->stability < 42 || outward_v > 0.52)) {
+                    int was_down = robot->down;
                     robot->vx -= nx * outward_v * 0.25;
                     robot->vy -= ny * outward_v * 0.25;
                     fall_down_direction(robot, "cage wall impact",
                                         -nx, -ny, PART_TORSO,
                                         robot->angular_velocity,
                                         out, out_size);
+                    if (!was_down && robot->down) {
+                        crowd_react_knockdown(fight, -1, PART_TORSO, 1);
+                    }
                     robot->wall_braced = 1;
                     robot->wall_nx = nx;
                     robot->wall_ny = ny;
@@ -4579,20 +4681,30 @@ static void resolve_robot_contact(Fight *fight, char *out, size_t out_size,
                     if (rel > 0.46) {
                         double shove = clamp_double(rel * 0.20, 0.04, 0.18);
                         if (!a->down && (a->stability < 35 || rel > 0.76)) {
+                            int was_down = a->down;
                             a->vx -= nx * shove;
                             a->vy -= ny * shove;
                             fall_down_direction(a, "capsule collision",
                                                 -nx, -ny, ca->part,
                                                 a->angular_velocity,
                                                 out, out_size);
+                            if (!was_down && a->down) {
+                                crowd_react_knockdown(fight, 1, ca->part,
+                                                      rel > 0.72);
+                            }
                         }
                         if (!b->down && (b->stability < 35 || rel > 0.76)) {
+                            int was_down = b->down;
                             b->vx += nx * shove;
                             b->vy += ny * shove;
                             fall_down_direction(b, "capsule collision",
                                                 nx, ny, cb->part,
                                                 b->angular_velocity,
                                                 out, out_size);
+                            if (!was_down && b->down) {
+                                crowd_react_knockdown(fight, 0, cb->part,
+                                                      rel > 0.72);
+                            }
                         }
                     }
                 }
@@ -4688,8 +4800,8 @@ static void force_move_apart(Fight *fight, char *out, size_t out_size)
 
     clamp_robot_speed(a);
     clamp_robot_speed(b);
-    resolve_arena_contact(a, 0, out, out_size);
-    resolve_arena_contact(b, 1, out, out_size);
+    resolve_arena_contact(fight, 0, out, out_size);
+    resolve_arena_contact(fight, 1, out, out_size);
     update_robot_balance(a);
     update_robot_balance(b);
 
@@ -4711,9 +4823,10 @@ static void update_forced_move_apart(Fight *fight, char *out, size_t out_size)
     }
 }
 
-static void apply_balance_pressure(RobotState *robot, int side,
+static void apply_balance_pressure(Fight *fight, int side,
                                    char *out, size_t out_size)
 {
+    RobotState *robot = &fight->robot[side];
     if (robot->down || robot->balance_state == CFA_BALANCE_SUPPORTED) {
         return;
     }
@@ -4738,12 +4851,16 @@ static void apply_balance_pressure(RobotState *robot, int side,
          fabs(robot->angular_velocity) > 0.28)) {
         double fall_x = robot->center_mass_x - robot->support_center_x;
         double fall_y = robot->center_mass_y - robot->support_center_y;
+        int was_down = robot->down;
         append_text(out, out_size,
                     "R%d center of mass leaves support polygon %.2fm. ",
                     side + 1, robot->balance_offset);
         fall_down_direction(robot, "lost balance", fall_x, fall_y,
                             PART_TORSO, robot->angular_velocity,
                             out, out_size);
+        if (!was_down && robot->down) {
+            crowd_react_knockdown(fight, -1, PART_TORSO, 1);
+        }
     } else if (robot->balance_offset > ROBOT_BALANCE_FALL_MARGIN_M * 0.90 &&
                (robot->stability < 70 || robot->shock > 16 ||
                 fabs(robot->angular_velocity) > 0.18)) {
@@ -4791,8 +4908,8 @@ static void project_strike_contact(Fight *fight, int attacker_side,
     attacker->y -= ny * penetration * 0.35;
     defender->x += nx * penetration * 0.65;
     defender->y += ny * penetration * 0.65;
-    resolve_arena_contact(attacker, attacker_side, out, out_size);
-    resolve_arena_contact(defender, defender_side, out, out_size);
+    resolve_arena_contact(fight, attacker_side, out, out_size);
+    resolve_arena_contact(fight, defender_side, out, out_size);
     append_text(out, out_size, " contact shells separate %.2fm;", penetration);
 
     if (contact != NULL && contact->hit) {
@@ -5299,13 +5416,13 @@ static void physics_step(Fight *fight, char *out, size_t out_size)
             RobotState *robot = &fight->robot[i];
             robot->x += robot->vx / (double)PHYSICS_SUBSTEPS;
             robot->y += robot->vy / (double)PHYSICS_SUBSTEPS;
-            resolve_arena_contact(robot, i, out, out_size);
+            resolve_arena_contact(fight, i, out, out_size);
         }
 
         for (pass = 0; pass < ROBOT_CONTACT_SOLVER_PASSES; pass++) {
             resolve_robot_contact(fight, out, out_size, &reported_contact);
-            resolve_arena_contact(&fight->robot[0], 0, out, out_size);
-            resolve_arena_contact(&fight->robot[1], 1, out, out_size);
+            resolve_arena_contact(fight, 0, out, out_size);
+            resolve_arena_contact(fight, 1, out, out_size);
         }
     }
 
@@ -5377,7 +5494,7 @@ static void physics_step(Fight *fight, char *out, size_t out_size)
         }
         update_robot_footwork(&fight->robot[i]);
         update_guard_pose_state(&fight->robot[i]);
-        apply_balance_pressure(&fight->robot[i], i, out, out_size);
+        apply_balance_pressure(fight, i, out, out_size);
         update_ground_contact(&fight->robot[i], i, out, out_size);
     }
 }
@@ -5606,8 +5723,12 @@ static void apply_knockback(Fight *fight, int attacker_side, BodyPart target,
             clamp_abs(attacker->angular_velocity - yaw_impulse * 0.35,
                       ROBOT_MAX_ANGULAR_SPEED_RAD_PER_TURN);
         if (target == PART_HEAD) {
+            int was_head_detached = defender->head_detached;
             detach_head_for_knockout(defender, nx, ny, dv, yaw_impulse,
                                      raw_damage, contact, out, out_size);
+            if (!was_head_detached && defender->head_detached) {
+                crowd_react_head_detach(fight, attacker_side);
+            }
         }
     }
     recoil_scale = clamp_double(target_mass / fmax(2.0, strike_mass + target_mass) * 0.55,
@@ -5694,10 +5815,15 @@ static void apply_knockback(Fight *fight, int attacker_side, BodyPart target,
         fall_pressure + rng_range(&fight->rng, 0, 32) > threshold) {
         double fall_impulse = clamp_double(dv * 0.55 + instability * 0.10,
                                            0.06, 0.26);
+        int was_down = defender->down;
+        int surprise = raw_damage < 18 && defender->stability > 32;
         defender->vx += nx * fall_impulse;
         defender->vy += ny * fall_impulse;
         fall_down_direction(defender, spec->name, nx, ny, target,
                             defender->angular_velocity, out, out_size);
+        if (!was_down && defender->down) {
+            crowd_react_knockdown(fight, attacker_side, target, surprise);
+        }
         fight->clinch = 0;
     } else if (stagger_state != ROBOT_STAGGER_NONE) {
         set_stagger(defender, stagger_state, nx, ny, out, out_size);
@@ -6190,6 +6316,7 @@ static void resolve_attack(Fight *fight, int attacker_side, const Intent *intent
                 "R%d %s hits %s (roll %d/%d, gap %.2fm), raw %d;",
                 attacker_side + 1, spec->name, part_name(target), roll,
                 accuracy, gap, raw_damage);
+    crowd_react_hit(fight, attacker_side, target, raw_damage);
     if (strike_contact.hit && strike_contact.guarded) {
         append_text(out, out_size, " physical guard intercept %.0f%%;",
                     strike_contact.angle_cos * 100.0);
@@ -6209,12 +6336,16 @@ static void resolve_attack(Fight *fight, int attacker_side, const Intent *intent
     if (intent->command.id == CMD_THROW && fight->clinch) {
         double throw_x;
         double throw_y;
+        int was_down = defender->down;
 
         fight->clinch = 0;
         vector_to_opponent(fight, attacker_side, &throw_x, &throw_y);
         fall_down_direction(defender, "THROW release", throw_x, throw_y,
                             PART_TORSO, defender->angular_velocity,
                             out, out_size);
+        if (!was_down && defender->down) {
+            crowd_react_knockdown(fight, attacker_side, PART_TORSO, 0);
+        }
         append_text(out, out_size, " Throw releases clinch. ");
     }
 
@@ -6284,6 +6415,13 @@ static void append_commentary_cues(const Fight *fight, char *out,
 {
     append_robot_commentary(fight, 0, out, out_size);
     append_robot_commentary(fight, 1, out, out_size);
+    if (fight->crowd.gasp > 0.40) {
+        append_text(out, out_size, " Crowd gasps. ");
+    } else if (fight->crowd.cheer > 0.55) {
+        append_text(out, out_size, " Crowd roars. ");
+    } else if (fight->crowd.clap > 0.45) {
+        append_text(out, out_size, " Crowd claps. ");
+    }
 }
 
 #ifndef CFA_NO_CLI_MAIN
@@ -6366,6 +6504,7 @@ static BoutResult run_bout(const Program *left, const Program *right,
 
         recover_robot(&fight.robot[0]);
         recover_robot(&fight.robot[1]);
+        decay_crowd(&fight.crowd);
 
         intent[0] = build_intent(left, &fight, 0, &cursor[0], event, sizeof(event));
         intent[1] = build_intent(right, &fight, 1, &cursor[1], event, sizeof(event));
@@ -6693,6 +6832,12 @@ static void fill_snapshot(const CFABout *bout, CFATurnSnapshot *snapshot)
     copy_text(snapshot->event, sizeof(snapshot->event), bout->last_event);
     copy_text(snapshot->resultMethod, sizeof(snapshot->resultMethod),
               bout->result_method);
+    snapshot->crowd.energy = bout->fight.crowd.energy;
+    snapshot->crowd.cheer = bout->fight.crowd.cheer;
+    snapshot->crowd.clap = bout->fight.crowd.clap;
+    snapshot->crowd.gasp = bout->fight.crowd.gasp;
+    snapshot->crowd.chant = bout->fight.crowd.chant;
+    snapshot->crowd.chantSide = bout->fight.crowd.chant_side;
 
     if (bout->last_intent[0].spec != NULL) {
         snapshot->leftCommandId = bout->last_intent[0].command.id;
@@ -6813,6 +6958,7 @@ int cfa_bout_step(CFABout *bout, CFATurnSnapshot *snapshot)
 
     recover_robot(&bout->fight.robot[0]);
     recover_robot(&bout->fight.robot[1]);
+    decay_crowd(&bout->fight.crowd);
 
     intent[0] = build_intent(&bout->left, &bout->fight, 0,
                              &bout->cursor[0], event, sizeof(event));
