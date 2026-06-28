@@ -14,7 +14,7 @@
 #define MAX_LINE 256
 #define MAX_TOKENS 24
 #define MAX_PROGRAMS 32
-#define MAX_TURNS 240
+#define MAX_TURNS CFA_MAX_TURNS
 #define TOURNAMENT_BOUTS 3
 
 #define PI 3.14159265358979323846
@@ -146,7 +146,6 @@
 #define ROBOT_MASS_KG 118.0
 #define FRICTION 0.82
 #define CLINCH_BREAK_GAP_M 0.34
-#define CFA_SECONDS_PER_TURN 0.48
 #define CFA_PHYSICS_STEPS_PER_TURN 2.0
 #define FORCED_MOVE_APART_RELEASE_GAP_M 0.38
 #define FORCED_MOVE_APART_IMPULSE_M 0.34
@@ -6473,6 +6472,7 @@ struct CFABout {
     int finished;
     int winner;
     int score[2];
+    int turn_limit;
     size_t cursor[2];
     char result_method[CFA_MAX_METHOD];
     Intent last_intent[2];
@@ -6760,6 +6760,9 @@ void cfa_bout_restart(CFABout *bout, uint32_t seed)
     bout->turn = 0;
     bout->finished = 0;
     bout->winner = -2;
+    if (bout->turn_limit <= 0) {
+        bout->turn_limit = MAX_TURNS;
+    }
     bout->score[0] = structural_score(&bout->fight.robot[0]);
     bout->score[1] = structural_score(&bout->fight.robot[1]);
     bout->cursor[0] = 0;
@@ -6768,6 +6771,24 @@ void cfa_bout_restart(CFABout *bout, uint32_t seed)
     memset(bout->last_intent, 0, sizeof(bout->last_intent));
     snprintf(bout->last_event, sizeof(bout->last_event),
              "Bout loaded: %s versus %s.", bout->left.name, bout->right.name);
+}
+
+void cfa_bout_set_turn_limit(CFABout *bout, int max_turns)
+{
+    if (bout == NULL) {
+        return;
+    }
+    bout->turn_limit = max_turns > 0 ? max_turns : MAX_TURNS;
+}
+
+void cfa_bout_finish_time_limit(CFABout *bout)
+{
+    if (bout == NULL || bout->finished) {
+        return;
+    }
+    snprintf(bout->last_event, sizeof(bout->last_event),
+             "One-hour time limit expired without knockout.");
+    finish_bout(bout);
 }
 
 int cfa_bout_step(CFABout *bout, CFATurnSnapshot *snapshot)
@@ -6843,7 +6864,7 @@ int cfa_bout_step(CFABout *bout, CFATurnSnapshot *snapshot)
     bout->score[1] = structural_score(&bout->fight.robot[1]);
 
     if (bout->fight.robot[0].defeated || bout->fight.robot[1].defeated ||
-        bout->turn >= MAX_TURNS) {
+        bout->turn >= bout->turn_limit) {
         finish_bout(bout);
     }
 

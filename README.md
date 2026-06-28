@@ -28,6 +28,11 @@ Run a single bout:
 build/cagefight command_sets/headhunter.cfos command_sets/limb_breaker.cfos 42
 ```
 
+Bouts continue until a clear stoppage or the one-hour bout horizon is reached.
+At the standard `0.48 s` turn duration this is `7500` turns, so a
+`time limit expired without knockout` draw is reserved for true endurance
+failures rather than short demo runs.
+
 Run the sample tournament:
 
 ```sh

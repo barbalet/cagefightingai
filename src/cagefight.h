@@ -12,7 +12,9 @@ extern "C" {
 #define CFA_MAX_EVENT 1536
 #define CFA_MAX_METHOD 96
 #define CFA_MAX_COMMAND_NAME 24
-#define CFA_MAX_TURNS 240
+#define CFA_SECONDS_PER_TURN 0.48
+#define CFA_BOUT_TIME_LIMIT_SECONDS 3600.0
+#define CFA_MAX_TURNS 7500
 #define CFA_MAX_CAPSULES 14
 #define FORCED_MOVE_APART 2.0
 
@@ -241,6 +243,8 @@ CFABout *cfa_bout_create_from_files(const char *left_path,
                                     size_t error_size);
 void cfa_bout_destroy(CFABout *bout);
 void cfa_bout_restart(CFABout *bout, uint32_t seed);
+void cfa_bout_set_turn_limit(CFABout *bout, int max_turns);
+void cfa_bout_finish_time_limit(CFABout *bout);
 int cfa_bout_step(CFABout *bout, CFATurnSnapshot *snapshot);
 void cfa_bout_get_snapshot(const CFABout *bout, CFATurnSnapshot *snapshot);
 int cfa_bout_is_finished(const CFABout *bout);
