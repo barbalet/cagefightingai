@@ -6254,7 +6254,7 @@ static void append_robot_commentary(const Fight *fight, int side,
                     "%s driven against the cage, impulse %.2f. ",
                     label, robot->wall_impulse);
     }
-    if (robot->ground_impact > 0.16) {
+    if (robot->ground_impact > 0.16 && robot->ground_settle > 0.95) {
         append_text(out, out_size,
                     "%s hard knockdown on %s, slide %.2fm/t. ",
                     label, part_name(robot->ground_impact_part),
