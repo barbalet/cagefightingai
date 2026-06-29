@@ -8,6 +8,7 @@
 extern "C" {
 #endif
 
+#define CFA_CORE_VERSION "0.001"
 #define CFA_MAX_NAME 80
 #define CFA_MAX_EVENT 1536
 #define CFA_MAX_METHOD 96
@@ -245,6 +246,8 @@ typedef struct {
     CFARobotSnapshot leftRobot;
     CFARobotSnapshot rightRobot;
 } CFATurnSnapshot;
+
+const char *cfa_core_version(void);
 
 CFABout *cfa_bout_create_from_files(const char *left_path,
                                     const char *right_path,

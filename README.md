@@ -32,6 +32,16 @@ make TARGET=native
 
 This writes `build/native/cagefight`.
 
+Query the CFA core source/API version:
+
+```sh
+make native
+build/native/cagefight --version
+```
+
+The value comes from `CFA_CORE_VERSION` in `src/cagefight.h`. C and Swift
+callers can query the same value with `cfa_core_version()`.
+
 Build an Apple Silicon macOS command-line executable:
 
 ```sh

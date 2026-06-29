@@ -59,6 +59,7 @@ APPLE_SILICON_CFLAGS ?= $(CFLAGS) -arch arm64
 APPLE_SILICON_LDFLAGS ?=
 APPLE_SILICON_LDLIBS ?= $(LDLIBS)
 SRC := src/cagefight.c
+HEADERS := src/cagefight.h
 COMMAND_SETS := command_sets/headhunter.cfos \
 	command_sets/joint_reaper.cfos \
 	command_sets/shock_clinch.cfos \
@@ -67,7 +68,7 @@ COMMAND_SETS := command_sets/headhunter.cfos \
 	command_sets/clinch_driver.cfos \
 	command_sets/counter_guard.cfos
 
-.PHONY: all clean demo tournament moves linux-x86 linux-x86_64 native host apple-silicon mac macos-arm64 swift-mac setup-linux-x86 test test-builds test-build-matrix
+.PHONY: all clean demo tournament moves version linux-x86 linux-x86_64 native host apple-silicon mac macos-arm64 swift-mac setup-linux-x86 test test-builds test-build-matrix
 
 all: $(TARGET)
 
@@ -75,20 +76,20 @@ linux-x86: linux-x86_64
 
 linux-x86_64: $(LINUX_X86_BIN)
 
-$(LINUX_X86_BIN): $(SRC) | $(BUILD_DIR)/linux-x86_64
+$(LINUX_X86_BIN): $(SRC) $(HEADERS) | $(BUILD_DIR)/linux-x86_64
 	@command -v $(firstword $(LINUX_X86_CC)) >/dev/null 2>&1 || { echo "error: $(firstword $(LINUX_X86_CC)) not found. Install a Linux x86_64 compiler or pass LINUX_X86_CC=..."; exit 127; }
 	mkdir -p "$(ZIG_GLOBAL_CACHE_DIR)" "$(ZIG_LOCAL_CACHE_DIR)"
 	ZIG_GLOBAL_CACHE_DIR="$(ZIG_GLOBAL_CACHE_DIR)" ZIG_LOCAL_CACHE_DIR="$(ZIG_LOCAL_CACHE_DIR)" $(LINUX_X86_CC) $(LINUX_X86_CFLAGS) $(LINUX_X86_LDFLAGS) -o $@ $(SRC) $(LINUX_X86_LDLIBS)
 
 native host: $(NATIVE_BIN)
 
-$(NATIVE_BIN): $(SRC) | $(BUILD_DIR)/native
+$(NATIVE_BIN): $(SRC) $(HEADERS) | $(BUILD_DIR)/native
 	@command -v $(firstword $(NATIVE_CC)) >/dev/null 2>&1 || { echo "error: $(firstword $(NATIVE_CC)) not found. Install a host C compiler or pass NATIVE_CC=..."; exit 127; }
 	$(NATIVE_CC) $(NATIVE_CFLAGS) $(NATIVE_LDFLAGS) -o $@ $(SRC) $(NATIVE_LDLIBS)
 
 apple-silicon mac macos-arm64: $(APPLE_SILICON_BIN)
 
-$(APPLE_SILICON_BIN): $(SRC) | $(BUILD_DIR)/apple-silicon
+$(APPLE_SILICON_BIN): $(SRC) $(HEADERS) | $(BUILD_DIR)/apple-silicon
 	@if [ "$(HOST_OS)" != "Darwin" ]; then echo "error: Apple Silicon CLI builds require macOS/Xcode command line tools. Use the Swift/Xcode build for app targets."; exit 2; fi
 	@command -v $(firstword $(APPLE_SILICON_CC)) >/dev/null 2>&1 || { echo "error: $(firstword $(APPLE_SILICON_CC)) not found. Install Xcode command line tools or pass APPLE_SILICON_CC=..."; exit 127; }
 	$(APPLE_SILICON_CC) $(APPLE_SILICON_CFLAGS) $(APPLE_SILICON_LDFLAGS) -o $@ $(SRC) $(APPLE_SILICON_LDLIBS)
@@ -128,6 +129,9 @@ tournament: $(RUN_BIN)
 
 moves: $(RUN_BIN)
 	$(RUN_BIN) --list-moves
+
+version: $(RUN_BIN)
+	$(RUN_BIN) --version
 
 test: test-builds
 
@@ -202,6 +206,15 @@ test-builds:
 	fi; \
 	run_target "swift-mac" "swift-mac" "" "no" "$$has_swift" "$$swift_reason"; \
 	if [ "$$has_native" = "yes" ]; then \
+		echo "==> cfa version smoke"; \
+		expected_version=$$(sed -n 's/^#define CFA_CORE_VERSION "\([^"]*\)"/\1/p' src/cagefight.h); \
+		version_output=$$("$(NATIVE_BIN)" --version); \
+		if [ "$$version_output" = "$$expected_version" ]; then \
+			echo "ok: cfa core version $$version_output"; \
+		else \
+			echo "FAIL: cfa core version expected $$expected_version, got $$version_output"; \
+			fail=$$((fail + 1)); \
+		fi; \
 		echo "==> cfa log smoke"; \
 		mkdir -p "$(BUILD_DIR)/test-logs"; \
 		if CFA_LOG_DIR="$(BUILD_DIR)/test-logs" "$(NATIVE_BIN)" --smoke-log command_sets/headhunter.cfos command_sets/limb_breaker.cfos 42 3 > "$(BUILD_DIR)/test-logs/smoke.out"; then \

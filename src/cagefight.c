@@ -7415,6 +7415,7 @@ int cfa_log_begin_bout(const CFABout *bout,
     cfa_log_timestamp(timestamp, sizeof(timestamp), 0);
     cfa_log_line("CFA run log");
     cfa_log_line("log_version=2");
+    cfa_log_line("core_version=%s", cfa_core_version());
     cfa_log_line("created_at=%s", timestamp);
     cfa_log_line("run_number=%d", cfa_log_run_number);
     cfa_log_line("context=%s",
@@ -7775,6 +7776,11 @@ const char *cfa_command_name(int command_id)
     return move_specs[command_id].name;
 }
 
+const char *cfa_core_version(void)
+{
+    return CFA_CORE_VERSION;
+}
+
 #ifndef CFA_NO_CLI_MAIN
 static void print_usage(const char *argv0)
 {
@@ -7784,6 +7790,7 @@ static void print_usage(const char *argv0)
            argv0);
     printf("  %s --smoke-log left.cfos right.cfos [seed] [turns]\n", argv0);
     printf("  %s --list-moves\n", argv0);
+    printf("  %s --version\n", argv0);
 }
 
 static void print_moves(void)
@@ -8063,6 +8070,11 @@ int main(int argc, char **argv)
 
     if (equals_ci(argv[1], "--list-moves")) {
         print_moves();
+        return 0;
+    }
+
+    if (equals_ci(argv[1], "--version")) {
+        printf("%s\n", cfa_core_version());
         return 0;
     }
 
