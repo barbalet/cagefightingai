@@ -682,22 +682,34 @@ static int clamp_int(int value, int min_value, int max_value)
 
 static uint32_t rng_next(uint32_t *state)
 {
+    uint32_t value;
+
     *state = *state * 1664525u + 1013904223u;
-    return *state;
+    value = *state;
+    value ^= value >> 16;
+    value *= 0x7feb352du;
+    value ^= value >> 15;
+    value *= 0x846ca68bu;
+    value ^= value >> 16;
+    return value;
 }
 
 static int rng_range(uint32_t *state, int min_value, int max_value)
 {
     uint32_t value;
-    int span;
+    uint32_t span;
+    uint32_t limit;
 
     if (max_value <= min_value) {
         return min_value;
     }
 
-    value = rng_next(state);
-    span = max_value - min_value + 1;
-    return min_value + (int)(value % (uint32_t)span);
+    span = (uint32_t)(max_value - min_value + 1);
+    limit = UINT32_MAX - (UINT32_MAX % span);
+    do {
+        value = rng_next(state);
+    } while (value >= limit);
+    return min_value + (int)(value % span);
 }
 
 static void init_crowd(CrowdState *crowd)
