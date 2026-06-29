@@ -127,7 +127,7 @@
 #define CFA_GETUP_KNEE_SUPPORT (CFA_GROUND_L_KNEE | CFA_GROUND_R_KNEE)
 #define CFA_GETUP_FOOT_SUPPORT (CFA_GROUND_L_FOOT | CFA_GROUND_R_FOOT)
 #define CFA_GETUP_LEG_SUPPORT (CFA_GETUP_KNEE_SUPPORT | CFA_GETUP_FOOT_SUPPORT)
-#define ROBOT_HEAD_DETACH_TRAUMA_THRESHOLD 92
+#define ROBOT_HEAD_DETACH_TRAUMA_THRESHOLD 70
 #define PHYSICS_SUBSTEPS 3
 #define ROBOT_MAX_SPEED_M_PER_TURN 0.82
 #define ROBOT_MAX_ANGULAR_SPEED_RAD_PER_TURN 0.42
@@ -536,29 +536,29 @@ static const MoveSpec move_specs[CMD_COUNT] = {
       "Break clinch state and shove the body footprint backward." },
     { CMD_STAND, "STAND", 0, 0, 0, 4, 0.00, 0.00, 0.00, 0.00, PART_INVALID, USE_ANY_LEG, 10, 6,
       "Recover from a downed state if the lower frame can carry load." },
-    { CMD_L_JAB, "L_JAB", 1, 10, 82, 10, 0.15, ROBOT_ARM_STRIKE_GAP_M + ROBOT_TORSO_TWIST_REACH_M, 0.03, 0.04, PART_HEAD, USE_L_ARM, 3, 3,
+    { CMD_L_JAB, "L_JAB", 1, 14, 82, 10, 0.15, ROBOT_ARM_STRIKE_GAP_M + ROBOT_TORSO_TWIST_REACH_M, 0.03, 0.06, PART_HEAD, USE_L_ARM, 3, 3,
       "Fast left linear strike used for range finding and processor shock." },
-    { CMD_R_CROSS, "R_CROSS", 1, 18, 72, 8, 0.12, ROBOT_ARM_STRIKE_GAP_M + ROBOT_TORSO_TWIST_REACH_M, 0.04, 0.09, PART_HEAD, USE_R_ARM, 5, 5,
+    { CMD_R_CROSS, "R_CROSS", 1, 28, 72, 8, 0.12, ROBOT_ARM_STRIKE_GAP_M + ROBOT_TORSO_TWIST_REACH_M, 0.04, 0.14, PART_HEAD, USE_R_ARM, 5, 5,
       "Rear straight punch with stronger momentum transfer." },
-    { CMD_L_HOOK, "L_HOOK", 1, 21, 66, 7, 0.00, ROBOT_HOOK_STRIKE_GAP_M + ROBOT_TORSO_TWIST_REACH_M * 0.65, 0.03, 0.11, PART_HEAD, USE_L_ARM, 7, 6,
+    { CMD_L_HOOK, "L_HOOK", 1, 32, 66, 7, 0.00, ROBOT_HOOK_STRIKE_GAP_M + ROBOT_TORSO_TWIST_REACH_M * 0.65, 0.03, 0.17, PART_HEAD, USE_L_ARM, 7, 6,
       "Short arc strike for pocket and collision range." },
-    { CMD_R_HOOK, "R_HOOK", 1, 23, 64, 7, 0.00, ROBOT_HOOK_STRIKE_GAP_M + ROBOT_TORSO_TWIST_REACH_M * 0.65, 0.03, 0.12, PART_HEAD, USE_R_ARM, 7, 7,
+    { CMD_R_HOOK, "R_HOOK", 1, 36, 64, 7, 0.00, ROBOT_HOOK_STRIKE_GAP_M + ROBOT_TORSO_TWIST_REACH_M * 0.65, 0.03, 0.19, PART_HEAD, USE_R_ARM, 7, 7,
       "Heavy right arc strike with elevated knockdown pressure." },
-    { CMD_UPPERCUT, "UPPERCUT", 1, 24, 61, 6, 0.00, ROBOT_UPPERCUT_STRIKE_GAP_M + ROBOT_TORSO_TWIST_REACH_M * 0.50, 0.02, 0.13, PART_HEAD, USE_ANY_ARM, 9, 8,
+    { CMD_UPPERCUT, "UPPERCUT", 1, 38, 61, 6, 0.00, ROBOT_UPPERCUT_STRIKE_GAP_M + ROBOT_TORSO_TWIST_REACH_M * 0.50, 0.02, 0.20, PART_HEAD, USE_ANY_ARM, 9, 8,
       "Vertical close-range strike against the head module." },
-    { CMD_LOW_KICK, "LOW_KICK", 1, 20, 70, 7, 0.18, ROBOT_KICK_STRIKE_GAP_M + ROBOT_HIP_TWIST_REACH_M, 0.02, 0.12, PART_L_LEG, USE_ANY_LEG, 8, 7,
+    { CMD_LOW_KICK, "LOW_KICK", 1, 30, 70, 7, 0.18, ROBOT_KICK_STRIKE_GAP_M + ROBOT_HIP_TWIST_REACH_M, 0.02, 0.17, PART_L_LEG, USE_ANY_LEG, 8, 7,
       "Low-line strike against knee, hip, and ankle load paths." },
-    { CMD_HIGH_KICK, "HIGH_KICK", 1, 31, 48, 5, 0.22, ROBOT_KICK_STRIKE_GAP_M + ROBOT_HIP_TWIST_REACH_M, 0.02, 0.18, PART_HEAD, USE_R_LEG, 16, 12,
+    { CMD_HIGH_KICK, "HIGH_KICK", 1, 46, 48, 5, 0.22, ROBOT_KICK_STRIKE_GAP_M + ROBOT_HIP_TWIST_REACH_M, 0.02, 0.25, PART_HEAD, USE_R_LEG, 16, 12,
       "High-energy head strike with high fall risk and thermal cost." },
-    { CMD_KNEE, "KNEE", 1, 26, 63, 6, 0.00, 0.30, 0.02, 0.15, PART_TORSO, USE_ANY_LEG, 10, 8,
+    { CMD_KNEE, "KNEE", 1, 40, 63, 6, 0.00, 0.30, 0.02, 0.22, PART_TORSO, USE_ANY_LEG, 10, 8,
       "Short piston strike to torso or head from contact range." },
-    { CMD_ELBOW, "ELBOW", 1, 25, 67, 7, 0.00, 0.28, 0.01, 0.14, PART_HEAD, USE_ANY_ARM, 7, 6,
+    { CMD_ELBOW, "ELBOW", 1, 38, 67, 7, 0.00, 0.28, 0.01, 0.20, PART_HEAD, USE_ANY_ARM, 7, 6,
       "Compact close strike using the forearm hinge and elbow hardpoint." },
     { CMD_CLINCH, "CLINCH", 1, 4, 74, 8, 0.00, 0.32, 0.03, 0.02, PART_TORSO, USE_BOTH_ARMS, 6, 5,
       "Attach both arms to the opponent frame and constrain separation." },
-    { CMD_THROW, "THROW", 1, 34, 52, 4, 0.00, 0.30, 0.00, 0.34, PART_TORSO, USE_BOTH_ARMS, 18, 14,
+    { CMD_THROW, "THROW", 1, 48, 52, 4, 0.00, 0.30, 0.00, 0.44, PART_TORSO, USE_BOTH_ARMS, 18, 14,
       "Clinch-only rotational takedown with high knockback and fall pressure." },
-    { CMD_STOMP, "STOMP", 1, 29, 55, 4, 0.00, 0.28, 0.00, 0.16, PART_R_LEG, USE_ANY_LEG, 15, 11,
+    { CMD_STOMP, "STOMP", 1, 42, 55, 4, 0.00, 0.28, 0.00, 0.23, PART_R_LEG, USE_ANY_LEG, 15, 11,
       "Downward strike against a close or downed opponent." }
 };
 
@@ -751,7 +751,7 @@ static void crowd_add(CrowdState *crowd, double energy, double cheer,
 static void crowd_react_hit(Fight *fight, int attacker_side, BodyPart target,
                             int raw_damage)
 {
-    double force = clamp_double((double)raw_damage / 80.0, 0.0, 1.0);
+    double force = clamp_double((double)raw_damage / 112.0, 0.0, 1.0);
     double head_bonus = target == PART_HEAD ? 0.05 : 0.0;
     double body_bonus = target == PART_TORSO ? 0.025 : 0.0;
     double chant = raw_damage >= 28 ? 0.10 + force * 0.10 : 0.0;
@@ -3015,16 +3015,23 @@ static int evaluate_defeat(RobotState *robot)
         mark_defeat(robot, "dramatic knockout by head detachment");
         return 1;
     }
-    if (robot->processor <= 0 || robot->integrity[PART_HEAD] <= 0) {
+    if (robot->processor <= 0 || robot->integrity[PART_HEAD] <= 0 ||
+        (robot->processor <= 20 && robot->shock >= 38)) {
         mark_defeat(robot, "processor kill by head module failure");
         return 1;
     }
-    if (robot->integrity[PART_TORSO] <= 0) {
+    if (robot->integrity[PART_TORSO] <= 0 ||
+        robot->integrity[PART_TORSO] <= 45 ||
+        (robot->integrity[PART_TORSO] <= 70 && robot->shock >= 26)) {
         mark_defeat(robot, "technical knockout by torso power-bus collapse");
         return 1;
     }
-    if (robot->shock >= 100) {
+    if (robot->shock >= 64) {
         mark_defeat(robot, "knockout by cranial watchdog reset");
+        return 1;
+    }
+    if (robot->down && robot->shock >= 50 && robot->processor <= 80) {
+        mark_defeat(robot, "knockout by failed get-up control");
         return 1;
     }
     if (robot->detached[PART_L_LEG] && robot->detached[PART_R_LEG]) {
@@ -5545,20 +5552,23 @@ static void apply_damage(Fight *fight, int defender_side, BodyPart target,
         }
     }
 
-    net_damage = clamp_int(net_damage, deflected ? 0 : 1, 80);
+    net_damage = clamp_int(net_damage, deflected ? 0 : 1, 112);
     defender->integrity[target] -= net_damage;
     record_surface_damage(defender, target, raw_damage, net_damage);
 
     if (target == PART_HEAD) {
-        int processor_loss = net_damage * 3 / 4;
-        if (raw_damage >= 30) {
-            processor_loss += 4;
+        int processor_loss = net_damage * 5 / 4;
+        if (raw_damage >= 24) {
+            processor_loss += 8;
+        }
+        if (raw_damage >= 36) {
+            processor_loss += 8;
         }
         defender->processor -= processor_loss;
-        defender->shock += net_damage * 2 + raw_damage / 5;
+        defender->shock += net_damage * 2 + raw_damage / 3;
     } else if (target == PART_TORSO) {
-        defender->shock += net_damage / 2 + raw_damage / 8;
-        defender->stability -= net_damage / 4;
+        defender->shock += net_damage + raw_damage / 6;
+        defender->stability -= net_damage / 3;
     } else if (target == PART_L_LEG || target == PART_R_LEG) {
         defender->shock += net_damage / 3;
         defender->stability -= net_damage / 2 + 5;
@@ -5568,8 +5578,8 @@ static void apply_damage(Fight *fight, int defender_side, BodyPart target,
     }
 
     if (raw_damage >= 30) {
-        defender->shock += 8;
-        defender->stability -= 8;
+        defender->shock += 10;
+        defender->stability -= 10;
     }
 
     defender->stability = clamp_int(defender->stability, 0, max_stability(defender));
@@ -6294,14 +6304,14 @@ static void resolve_attack(Fight *fight, int attacker_side, const Intent *intent
     }
     if (grounded_reduction > 0) {
         raw_damage = clamp_int(raw_damage * (100 - grounded_reduction) / 100,
-                               1, 80);
+                               1, 112);
     }
-    raw_damage = clamp_int(raw_damage, 1, 80);
+    raw_damage = clamp_int(raw_damage, 1, 112);
     if (strike_contact.hit && strike_contact.glancing) {
         double retained = strike_contact.guarded
             ? 0.48
             : 0.56 + clamp_double(strike_contact.angle_cos, 0.0, 1.0) * 0.30;
-        raw_damage = clamp_int((int)((double)raw_damage * retained), 1, 80);
+        raw_damage = clamp_int((int)((double)raw_damage * retained), 1, 112);
         attacker->stability = clamp_int(attacker->stability -
                                             (strike_contact.guarded ? 1 : 3),
                                         0, max_stability(attacker));
@@ -6466,6 +6476,25 @@ static void print_status(const char *label, const RobotState *robot)
     printf("\n");
 }
 
+static void print_crowd_status(const CrowdState *crowd)
+{
+    const char *chant = "-";
+
+    if (crowd->chant_side == 0) {
+        chant = "R1";
+    } else if (crowd->chant_side == 1) {
+        chant = "R2";
+    }
+
+    printf("  Crowd energy %.2f cheer %.2f clap %.2f gasp %.2f chant %.2f %s\n",
+           crowd->energy,
+           crowd->cheer,
+           crowd->clap,
+           crowd->gasp,
+           crowd->chant,
+           chant);
+}
+
 static void print_final_status(const Program *left, const Program *right,
                                const Fight *fight)
 {
@@ -6551,6 +6580,7 @@ static BoutResult run_bout(const Program *left, const Program *right,
                 fight.robot[0].defeated || fight.robot[1].defeated) {
                 print_status("  R1", &fight.robot[0]);
                 print_status("  R2", &fight.robot[1]);
+                print_crowd_status(&fight.crowd);
             }
         }
 
@@ -6593,6 +6623,7 @@ static BoutResult run_bout(const Program *left, const Program *right,
             winner_name = right->name;
         }
         print_final_status(left, right, &fight);
+        print_crowd_status(&fight.crowd);
         printf("\nResult: %s at T%03d by %s\n",
                winner_name, result.turns, result.method);
         printf("Scores: R1 %d | R2 %d\n", result.score[0], result.score[1]);
