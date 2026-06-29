@@ -96,7 +96,8 @@ $(APPLE_SILICON_BIN): $(SRC) $(HEADERS) | $(BUILD_DIR)/apple-silicon
 
 swift-mac:
 	@if [ ! -d "$(SWIFT_PROJECT)" ]; then echo "error: Swift project not found at $(SWIFT_PROJECT)"; exit 2; fi
-	xcodebuild -project "$(SWIFT_PROJECT)" -scheme "$(SWIFT_SCHEME)" -configuration "$(SWIFT_CONFIGURATION)" -derivedDataPath "$(SWIFT_DERIVED_DATA)" build
+	@core_version=$$(sed -n 's/^#define CFA_CORE_VERSION "\([^"]*\)"/\1/p' src/cagefight.h); \
+	xcodebuild -project "$(SWIFT_PROJECT)" -scheme "$(SWIFT_SCHEME)" -configuration "$(SWIFT_CONFIGURATION)" -derivedDataPath "$(SWIFT_DERIVED_DATA)" MARKETING_VERSION="$$core_version" CURRENT_PROJECT_VERSION=1 build
 
 setup-linux-x86:
 	@if command -v $(firstword $(LINUX_X86_CC)) >/dev/null 2>&1; then \
