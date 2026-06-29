@@ -6,13 +6,117 @@ The current simulator is a physical arena model. Robots have positions, velociti
 
 ## Build
 
+The default build is the generic Linux x86_64 command-line simulator:
+
 ```sh
 make
 ```
 
+This writes `build/linux-x86_64/cagefight`. On x86_64 Linux it uses `cc`.
+On other hosts it auto-detects `x86_64-linux-gnu-gcc`,
+`x86_64-linux-musl-gcc`, or `zig cc -target x86_64-linux-musl`.
+
+You can select the same target explicitly:
+
+```sh
+make linux-x86
+make TARGET=linux-x86
+```
+
+Build a runnable binary for the current host:
+
+```sh
+make native
+make TARGET=native
+```
+
+This writes `build/native/cagefight`.
+
+Build an Apple Silicon macOS command-line executable:
+
+```sh
+make apple-silicon
+make TARGET=apple-silicon
+```
+
+This writes `build/apple-silicon/cagefight`.
+
+Override the Linux compiler and flags when your toolchain uses a different
+command:
+
+```sh
+make linux-x86 LINUX_X86_CC="zig cc -target x86_64-linux-gnu"
+make linux-x86 LINUX_X86_CC="clang --target=x86_64-linux-gnu"
+```
+
+On macOS with Homebrew, install the default cross-build fallback:
+
+```sh
+make setup-linux-x86
+```
+
+## Test
+
+Run the automated build availability matrix:
+
+```sh
+make test
+```
+
+The test target checks every configured build that is available on the current
+machine: Linux x86_64, native host, Apple Silicon CLI, and the Swift/Xcode app
+build. Missing cross-compilers are reported as skips. Binaries that can run on
+the current host are smoke-tested with `--list-moves`. The native test also
+runs a short C logger smoke test and verifies that turn frames and finish
+actions were written.
+
+Skip the Swift/Xcode app build during a pure C check:
+
+```sh
+make test TEST_SWIFT=0
+```
+
+## Logging
+
+CFA owns the run log and crash breadcrumb path. Logs default to:
+
+```text
+/tmp/CageFightingAIRuns
+```
+
+Set `CFA_LOG_DIR` to write logs somewhere else:
+
+```sh
+CFA_LOG_DIR=build/test-logs build/native/cagefight --smoke-log command_sets/headhunter.cfos command_sets/limb_breaker.cfos 42 3
+```
+
+Normal command-line bouts create a detailed per-run log automatically. Each log
+includes seed, command set paths, per-turn arena state, robot telemetry, crowd
+state, collision capsules, events, finish reason, and a flushed final frame.
+Crash signal handlers append a `CRASH_SIGNAL` line to the active log before the
+process terminates.
+
+The Swift/Metal app uses the same C logger and sets the log directory to its
+app temporary `CageFightingAIRuns` directory. The exact path is exposed through
+the app's run-log path and printed with `NSLog`. Swift can add app-specific
+actions such as pause, restart, audio toggles, and playback speed changes, but
+file creation, frame serialization, flushing, and crash breadcrumbs are handled
+by the CFA C layer.
+
 ## Xcode
 
 Open `CageFightingAI.xcodeproj` in Xcode and select the `CageFightingAI` scheme. The scheme builds the simulator as a macOS command-line executable and runs from `$(PROJECT_DIR)` so command-set paths resolve correctly.
+
+The Swift/Metal app in `../CageFightMetal` does not use the command-line
+binary from this Makefile. Xcode compiles `src/cagefight.c` directly with
+`CFA_NO_CLI_MAIN=1`, so macOS and iOS architecture selection comes from the
+chosen Swift/Xcode destination. From this directory, the Swift macOS app can be
+built with:
+
+```sh
+make swift-mac
+make TARGET=swift-mac
+```
 
 Default run arguments:
 
@@ -25,7 +129,7 @@ command_sets/headhunter.cfos command_sets/limb_breaker.cfos 42
 Run a single bout:
 
 ```sh
-build/cagefight command_sets/headhunter.cfos command_sets/limb_breaker.cfos 42
+build/native/cagefight command_sets/headhunter.cfos command_sets/limb_breaker.cfos 42
 ```
 
 Bouts continue until a clear stoppage or the one-hour bout horizon is reached.
@@ -322,13 +426,13 @@ This allows component health and physical position to cause behavior changes.
 Create a new `.cfos` file under `command_sets/` and run it against the existing programs:
 
 ```sh
-build/cagefight command_sets/my_program.cfos command_sets/headhunter.cfos 1001
+build/native/cagefight command_sets/my_program.cfos command_sets/headhunter.cfos 1001
 ```
 
 For tournament comparison:
 
 ```sh
-build/cagefight --tournament 1001 command_sets/*.cfos
+build/native/cagefight --tournament 1001 command_sets/*.cfos
 ```
 
 Use fixed seeds for regression testing. Change the seed when exploring whether a command set is robust to timing and impact variation.

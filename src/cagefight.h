@@ -263,6 +263,26 @@ int cfa_bout_get_robot_capsules(const CFABout *bout,
                                 CFACapsuleSnapshot *capsules,
                                 size_t capacity);
 
+void cfa_log_set_directory(const char *directory);
+void cfa_log_install_crash_handlers(void);
+int cfa_log_begin_bout(const CFABout *bout,
+                       const char *left_path,
+                       const char *right_path,
+                       const char *context,
+                       int turn_limit,
+                       double time_limit_seconds,
+                       double playback_speed);
+void cfa_log_action(const char *message);
+void cfa_log_bout_frame(const CFABout *bout,
+                        const char *label,
+                        double run_time_seconds,
+                        double playback_speed);
+void cfa_log_finish_bout(const CFABout *bout,
+                         double run_time_seconds,
+                         const char *reason);
+const char *cfa_log_current_path(void);
+void cfa_log_close(void);
+
 const char *cfa_part_name(int part);
 int cfa_part_initial(int part);
 int cfa_part_armor(int part);

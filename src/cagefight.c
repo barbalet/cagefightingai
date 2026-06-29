@@ -1,10 +1,18 @@
+#define _POSIX_C_SOURCE 200809L
+
 #include <ctype.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <math.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <signal.h>
+#include <sys/stat.h>
+#include <time.h>
+#include <unistd.h>
 
 #include "cagefight.h"
 
@@ -6906,6 +6914,628 @@ static void fill_snapshot(const CFABout *bout, CFATurnSnapshot *snapshot)
     copy_robot_snapshot(&snapshot->rightRobot, &bout->fight.robot[1]);
 }
 
+#define CFA_LOG_PATH_MAX 1024
+
+static FILE *cfa_log_file = NULL;
+static int cfa_log_fd = -1;
+static int cfa_log_run_number = 0;
+static int cfa_log_handlers_installed = 0;
+static volatile sig_atomic_t cfa_log_crashing = 0;
+static char cfa_log_path[CFA_LOG_PATH_MAX] = "";
+static char cfa_log_directory[CFA_LOG_PATH_MAX] = "";
+
+static const char *cfa_log_default_directory(void)
+{
+    const char *env = getenv("CFA_LOG_DIR");
+
+    if (env != NULL && env[0] != '\0') {
+        return env;
+    }
+    return "/tmp/CageFightingAIRuns";
+}
+
+static void cfa_log_timestamp(char *out, size_t out_size, int for_path)
+{
+    time_t now;
+    struct tm *parts;
+
+    if (out_size == 0) {
+        return;
+    }
+
+    now = time(NULL);
+    parts = localtime(&now);
+    if (parts == NULL) {
+        copy_text(out, out_size, "unknown_time");
+        return;
+    }
+
+    if (for_path) {
+        strftime(out, out_size, "%Y%m%d_%H%M%S", parts);
+    } else {
+        strftime(out, out_size, "%Y-%m-%dT%H:%M:%S%z", parts);
+    }
+}
+
+static void cfa_log_slug(char *out, size_t out_size, const char *value)
+{
+    const char *cursor;
+    size_t used = 0;
+
+    if (out_size == 0) {
+        return;
+    }
+
+    cursor = value != NULL && value[0] != '\0' ? base_name(value) : "unknown";
+    while (*cursor != '\0' && used + 1 < out_size) {
+        unsigned char ch = (unsigned char)*cursor;
+        if (isalnum(ch) || ch == '-' || ch == '_') {
+            out[used++] = (char)ch;
+        } else {
+            out[used++] = '_';
+        }
+        cursor++;
+    }
+    if (used == 0) {
+        out[used++] = 'x';
+    }
+    out[used] = '\0';
+}
+
+static int cfa_log_ensure_directory(const char *directory)
+{
+    if (directory == NULL || directory[0] == '\0') {
+        return 0;
+    }
+    if (mkdir(directory, 0775) == 0 || errno == EEXIST) {
+        return 1;
+    }
+    return 0;
+}
+
+static void cfa_log_flush(void)
+{
+    if (cfa_log_file == NULL) {
+        return;
+    }
+    fflush(cfa_log_file);
+    if (cfa_log_fd >= 0) {
+        fsync(cfa_log_fd);
+    }
+}
+
+static void cfa_log_line(const char *fmt, ...)
+{
+    va_list args;
+
+    if (cfa_log_file == NULL || fmt == NULL) {
+        return;
+    }
+
+    va_start(args, fmt);
+    vfprintf(cfa_log_file, fmt, args);
+    va_end(args);
+    fputc('\n', cfa_log_file);
+}
+
+static void cfa_log_action_line(const char *message)
+{
+    char timestamp[64];
+
+    if (cfa_log_file == NULL) {
+        return;
+    }
+    cfa_log_timestamp(timestamp, sizeof(timestamp), 0);
+    cfa_log_line("");
+    cfa_log_line("ACTION %s %s", timestamp,
+                 message != NULL && message[0] != '\0' ? message : "-");
+    cfa_log_flush();
+}
+
+static void cfa_signal_write(const char *text)
+{
+    size_t len = 0;
+
+    if (cfa_log_fd < 0 || text == NULL) {
+        return;
+    }
+    while (text[len] != '\0') {
+        len++;
+    }
+    if (len > 0) {
+        (void)write(cfa_log_fd, text, len);
+    }
+}
+
+static void cfa_signal_write_int(int value)
+{
+    char buffer[24];
+    int i = 0;
+    int j;
+    unsigned int n;
+
+    if (value < 0) {
+        cfa_signal_write("-");
+        n = (unsigned int)(-value);
+    } else {
+        n = (unsigned int)value;
+    }
+
+    do {
+        buffer[i++] = (char)('0' + (n % 10u));
+        n /= 10u;
+    } while (n > 0 && i < (int)sizeof(buffer));
+
+    for (j = i - 1; j >= 0; j--) {
+        char ch = buffer[j];
+        (void)write(cfa_log_fd, &ch, 1);
+    }
+}
+
+static const char *cfa_signal_name(int signal_number)
+{
+    switch (signal_number) {
+    case SIGABRT:
+        return "SIGABRT";
+    case SIGFPE:
+        return "SIGFPE";
+    case SIGILL:
+        return "SIGILL";
+    case SIGINT:
+        return "SIGINT";
+    case SIGSEGV:
+        return "SIGSEGV";
+    case SIGTERM:
+        return "SIGTERM";
+#ifdef SIGBUS
+    case SIGBUS:
+        return "SIGBUS";
+#endif
+    default:
+        return "UNKNOWN";
+    }
+}
+
+static void cfa_crash_signal_handler(int signal_number)
+{
+    if (cfa_log_crashing) {
+        _exit(128 + signal_number);
+    }
+    cfa_log_crashing = 1;
+
+    cfa_signal_write("\nCRASH_SIGNAL signal=");
+    cfa_signal_write_int(signal_number);
+    cfa_signal_write(" name=");
+    cfa_signal_write(cfa_signal_name(signal_number));
+    cfa_signal_write(" log=");
+    cfa_signal_write(cfa_log_path[0] != '\0' ? cfa_log_path : "(no active log)");
+    cfa_signal_write("\n");
+    if (cfa_log_fd >= 0) {
+        fsync(cfa_log_fd);
+    }
+
+    signal(signal_number, SIG_DFL);
+    raise(signal_number);
+    _exit(128 + signal_number);
+}
+
+static int cfa_log_open_file(const CFABout *bout,
+                             const char *left_path,
+                             const char *right_path,
+                             const char *context)
+{
+    char timestamp[64];
+    char left_slug[128];
+    char right_slug[128];
+    const char *directory;
+
+    cfa_log_close();
+    cfa_log_install_crash_handlers();
+
+    directory = cfa_log_directory[0] != '\0' ?
+        cfa_log_directory : cfa_log_default_directory();
+    if (!cfa_log_ensure_directory(directory)) {
+        fprintf(stderr, "CFA log directory failed: %s\n", directory);
+        return 0;
+    }
+
+    cfa_log_timestamp(timestamp, sizeof(timestamp), 1);
+    cfa_log_slug(left_slug, sizeof(left_slug),
+                 left_path != NULL ? left_path :
+                 (bout != NULL ? bout->left.name : "left"));
+    cfa_log_slug(right_slug, sizeof(right_slug),
+                 right_path != NULL ? right_path :
+                 (bout != NULL ? bout->right.name : "right"));
+    cfa_log_run_number++;
+
+    snprintf(cfa_log_path, sizeof(cfa_log_path),
+             "%s/run_%s_pid_%ld_%s_seed_%u_%s_vs_%s.log",
+             directory,
+             timestamp,
+             (long)getpid(),
+             context != NULL && context[0] != '\0' ? context : "cfa",
+             bout != NULL ? bout->seed : 0u,
+             left_slug,
+             right_slug);
+
+    cfa_log_file = fopen(cfa_log_path, "w");
+    if (cfa_log_file == NULL) {
+        fprintf(stderr, "CFA log open failed: %s\n", cfa_log_path);
+        cfa_log_path[0] = '\0';
+        cfa_log_fd = -1;
+        return 0;
+    }
+    cfa_log_fd = fileno(cfa_log_file);
+    return 1;
+}
+
+static const char *cfa_log_target_name(int part)
+{
+    return part_name((BodyPart)part);
+}
+
+static void cfa_log_damage(const char *label, const CFAPartDamage *damage)
+{
+    cfa_log_line("%s=scuff:%d,dent:%d,exposed:%d",
+                 label, damage->scuff, damage->dent, damage->exposed);
+}
+
+static void cfa_log_robot_flags(const CFARobotSnapshot *robot,
+                                char *out,
+                                size_t out_size)
+{
+    int first = 1;
+
+    if (out_size == 0) {
+        return;
+    }
+    out[0] = '\0';
+#define CFA_APPEND_FLAG(flag, text) \
+    do { \
+        if (flag) { \
+            append_text(out, out_size, "%s%s", first ? "" : ",", text); \
+            first = 0; \
+        } \
+    } while (0)
+    CFA_APPEND_FLAG(robot->guarding, "guarding");
+    CFA_APPEND_FLAG(robot->retreating, "retreating");
+    CFA_APPEND_FLAG(robot->advancing, "advancing");
+    CFA_APPEND_FLAG(robot->circling, "circling");
+    CFA_APPEND_FLAG(robot->down, "down");
+    CFA_APPEND_FLAG(robot->defeated, "defeated");
+#undef CFA_APPEND_FLAG
+    if (first) {
+        copy_text(out, out_size, "-");
+    }
+}
+
+static void cfa_log_capsules(const CFACapsuleSnapshot *capsules, int count)
+{
+    int i;
+
+    cfa_log_line("  capsules count=%d", count);
+    for (i = 0; i < count; i++) {
+        const CFACapsuleSnapshot *capsule = &capsules[i];
+        cfa_log_line("    capsule[%d] part=%s a=(%.3f,%.3f,%.3f) b=(%.3f,%.3f,%.3f) radius=%.3f mass_kg=%.3f",
+                     i,
+                     cfa_log_target_name(capsule->part),
+                     capsule->ax,
+                     capsule->ay,
+                     capsule->az,
+                     capsule->bx,
+                     capsule->by,
+                     capsule->bz,
+                     capsule->radius,
+                     capsule->massKg);
+    }
+}
+
+static void cfa_log_robot(const char *label,
+                          const char *name,
+                          const CFARobotSnapshot *robot,
+                          const CFACapsuleSnapshot *capsules,
+                          int capsule_count)
+{
+    char flags[128];
+
+    cfa_log_robot_flags(robot, flags, sizeof(flags));
+    cfa_log_line("%s name=%s", label, name != NULL ? name : "-");
+    cfa_log_line("  integrity head=%d torso=%d left_arm=%d right_arm=%d left_leg=%d right_leg=%d processor=%d shock=%d stability=%d heat=%d score_flags=%s",
+                 robot->head,
+                 robot->torso,
+                 robot->leftArm,
+                 robot->rightArm,
+                 robot->leftLeg,
+                 robot->rightLeg,
+                 robot->processor,
+                 robot->shock,
+                 robot->stability,
+                 robot->heat,
+                 flags);
+    cfa_log_line("  body pos=(%.3f,%.3f) vel=(%.3f,%.3f) facing=%.3f angular=%.3f wall_gap=%.3f wall_braced=%d wall_normal=(%.3f,%.3f)",
+                 robot->x,
+                 robot->y,
+                 robot->vx,
+                 robot->vy,
+                 robot->facing,
+                 robot->angularVelocity,
+                 robot->wallGap,
+                 robot->wallBraced,
+                 robot->wallNormalX,
+                 robot->wallNormalY);
+    cfa_log_line("  balance center_mass=(%.3f,%.3f,%.3f) support=(%.3f,%.3f) offset=%.3f supported=%d state=%d radius=%.3f",
+                 robot->centerMassX,
+                 robot->centerMassY,
+                 robot->centerMassZ,
+                 robot->supportCenterX,
+                 robot->supportCenterY,
+                 robot->balanceOffset,
+                 robot->balanceSupported,
+                 robot->balanceState,
+                 robot->supportRadius);
+    cfa_log_line("  feet left=(%.3f,%.3f)->(%.3f,%.3f) state=%d phase=%.3f right=(%.3f,%.3f)->(%.3f,%.3f) state=%d phase=%.3f swing=%d pivot=%d pivot_angle=%.3f",
+                 robot->leftFootX,
+                 robot->leftFootY,
+                 robot->leftFootTargetX,
+                 robot->leftFootTargetY,
+                 robot->leftFootState,
+                 robot->leftFootPhase,
+                 robot->rightFootX,
+                 robot->rightFootY,
+                 robot->rightFootTargetX,
+                 robot->rightFootTargetY,
+                 robot->rightFootState,
+                 robot->rightFootPhase,
+                 robot->swingFoot,
+                 robot->pivotFoot,
+                 robot->pivotAngle);
+    cfa_log_line("  guard blocking=%d success=%d arm=%d part=%s amount=%d reaction=%.3f parry=%d side=%d hand_height=%.3f elbow=%.3f coverage=%.3f",
+                 robot->blocking,
+                 robot->blockSuccess,
+                 robot->blockArm,
+                 cfa_log_target_name(robot->blockPart),
+                 robot->blockAmount,
+                 robot->blockReaction,
+                 robot->parryActive,
+                 robot->guardSide,
+                 robot->guardHandHeight,
+                 robot->guardElbowAngle,
+                 robot->guardCoverage);
+    cfa_log_line("  strike windup_command=%d progress=%.3f released=%d recovery_ticks=%d phase=%d follow=%.3f recoil=%.3f last_impact=%s damage=%d",
+                 robot->windupCommand,
+                 robot->windupProgress,
+                 robot->strikeReleased,
+                 robot->recoveryTicks,
+                 robot->strikePhase,
+                 robot->followThrough,
+                 robot->recoil,
+                 cfa_log_target_name(robot->lastImpactPart),
+                 robot->lastImpactDamage);
+    cfa_log_line("  down down=%d ticks=%d defeated=%d stagger_state=%d progress=%.3f dir=(%.3f,%.3f) fall_progress=%.3f fall_dir=(%.3f,%.3f) fall_angular=%.3f fall_contact=%s",
+                 robot->down,
+                 robot->downTicks,
+                 robot->defeated,
+                 robot->staggerState,
+                 robot->staggerProgress,
+                 robot->staggerDirectionX,
+                 robot->staggerDirectionY,
+                 robot->fallProgress,
+                 robot->fallDirectionX,
+                 robot->fallDirectionY,
+                 robot->fallAngularVelocity,
+                 cfa_log_target_name(robot->fallContactPart));
+    cfa_log_line("  ground mask=%d impact_part=%s impact=%.3f slide=%.3f settle=%.3f getup_state=%d progress=%.3f blocked=%d force=(%.3f,%.3f,%.3f) support_mask=%d pressure=%.3f defense=%.3f roll=%.3f",
+                 robot->groundContactMask,
+                 cfa_log_target_name(robot->groundImpactPart),
+                 robot->groundImpact,
+                 robot->groundSlide,
+                 robot->groundSettle,
+                 robot->getUpState,
+                 robot->getUpProgress,
+                 robot->getUpBlocked,
+                 robot->getUpForceX,
+                 robot->getUpForceY,
+                 robot->getUpForceZ,
+                 robot->getUpSupportMask,
+                 robot->getUpPressure,
+                 robot->groundedDefense,
+                 robot->groundedRoll);
+    cfa_log_line("  clinch leverage=%.3f pressure=%.3f throw_torque=%.3f recent_part=%s raw=%d net=%d point=(%.3f,%.3f,%.3f)",
+                 robot->clinchLeverage,
+                 robot->clinchPressure,
+                 robot->throwTorque,
+                 cfa_log_target_name(robot->recentDamagePart),
+                 robot->recentDamageRaw,
+                 robot->recentDamageNet,
+                 robot->recentDamageX,
+                 robot->recentDamageY,
+                 robot->recentDamageZ);
+    cfa_log_line("  detach left_arm=%d right_arm=%d left_leg=%d right_leg=%d head=%d head_pos=(%.3f,%.3f,%.3f) head_vel=(%.3f,%.3f,%.3f) head_spin=%.3f method=%s",
+                 robot->leftArmDetached,
+                 robot->rightArmDetached,
+                 robot->leftLegDetached,
+                 robot->rightLegDetached,
+                 robot->headDetached,
+                 robot->headDetachX,
+                 robot->headDetachY,
+                 robot->headDetachZ,
+                 robot->headDetachVX,
+                 robot->headDetachVY,
+                 robot->headDetachVZ,
+                 robot->headDetachSpin,
+                 robot->method[0] != '\0' ? robot->method : "-");
+    cfa_log_damage("  damage head", &robot->headDamage);
+    cfa_log_damage("  damage torso", &robot->torsoDamage);
+    cfa_log_damage("  damage left_arm", &robot->leftArmDamage);
+    cfa_log_damage("  damage right_arm", &robot->rightArmDamage);
+    cfa_log_damage("  damage left_leg", &robot->leftLegDamage);
+    cfa_log_damage("  damage right_leg", &robot->rightLegDamage);
+    cfa_log_capsules(capsules, capsule_count);
+}
+
+void cfa_log_set_directory(const char *directory)
+{
+    copy_text(cfa_log_directory, sizeof(cfa_log_directory), directory);
+}
+
+void cfa_log_install_crash_handlers(void)
+{
+    if (cfa_log_handlers_installed) {
+        return;
+    }
+    signal(SIGABRT, cfa_crash_signal_handler);
+    signal(SIGFPE, cfa_crash_signal_handler);
+    signal(SIGILL, cfa_crash_signal_handler);
+    signal(SIGINT, cfa_crash_signal_handler);
+    signal(SIGSEGV, cfa_crash_signal_handler);
+    signal(SIGTERM, cfa_crash_signal_handler);
+#ifdef SIGBUS
+    signal(SIGBUS, cfa_crash_signal_handler);
+#endif
+    cfa_log_handlers_installed = 1;
+}
+
+int cfa_log_begin_bout(const CFABout *bout,
+                       const char *left_path,
+                       const char *right_path,
+                       const char *context,
+                       int turn_limit,
+                       double time_limit_seconds,
+                       double playback_speed)
+{
+    char timestamp[64];
+
+    if (bout == NULL) {
+        return 0;
+    }
+    if (!cfa_log_open_file(bout, left_path, right_path, context)) {
+        return 0;
+    }
+
+    cfa_log_timestamp(timestamp, sizeof(timestamp), 0);
+    cfa_log_line("CFA run log");
+    cfa_log_line("log_version=2");
+    cfa_log_line("created_at=%s", timestamp);
+    cfa_log_line("run_number=%d", cfa_log_run_number);
+    cfa_log_line("context=%s",
+                 context != NULL && context[0] != '\0' ? context : "cfa");
+    cfa_log_line("pid=%ld", (long)getpid());
+    cfa_log_line("seed=%u", bout->seed);
+    cfa_log_line("left_name=%s", bout->left.name);
+    cfa_log_line("right_name=%s", bout->right.name);
+    cfa_log_line("left_path=%s", left_path != NULL ? left_path : "-");
+    cfa_log_line("right_path=%s", right_path != NULL ? right_path : "-");
+    cfa_log_line("turn_limit=%d", turn_limit);
+    cfa_log_line("time_limit_seconds=%.3f", time_limit_seconds);
+    cfa_log_line("initial_playback_speed=%.3f", playback_speed);
+    cfa_log_line("seconds_per_turn=%.3f", CFA_SECONDS_PER_TURN);
+    cfa_log_line("max_capsules=%d", CFA_MAX_CAPSULES);
+    cfa_log_action_line("bout loaded");
+    cfa_log_bout_frame(bout, "initial", 0.0, playback_speed);
+    fprintf(stderr, "CFA run log: %s\n", cfa_log_path);
+    return 1;
+}
+
+void cfa_log_action(const char *message)
+{
+    cfa_log_action_line(message);
+}
+
+void cfa_log_bout_frame(const CFABout *bout,
+                        const char *label,
+                        double run_time_seconds,
+                        double playback_speed)
+{
+    CFATurnSnapshot snapshot;
+    CFACapsuleSnapshot left_capsules[CFA_MAX_CAPSULES];
+    CFACapsuleSnapshot right_capsules[CFA_MAX_CAPSULES];
+    int left_count;
+    int right_count;
+
+    if (cfa_log_file == NULL || bout == NULL) {
+        return;
+    }
+
+    memset(left_capsules, 0, sizeof(left_capsules));
+    memset(right_capsules, 0, sizeof(right_capsules));
+    fill_snapshot(bout, &snapshot);
+    left_count = cfa_bout_get_robot_capsules(bout, 0, left_capsules,
+                                             CFA_MAX_CAPSULES);
+    right_count = cfa_bout_get_robot_capsules(bout, 1, right_capsules,
+                                              CFA_MAX_CAPSULES);
+
+    cfa_log_line("");
+    cfa_log_line("%s turn=%d run_time=%.3f playback=%.3f finished=%d winner=%d result=%s",
+                 label != NULL && label[0] != '\0' ? label : "frame",
+                 snapshot.turn,
+                 run_time_seconds,
+                 playback_speed,
+                 snapshot.finished,
+                 snapshot.winner,
+                 snapshot.resultMethod[0] != '\0' ?
+                    snapshot.resultMethod : "-");
+    cfa_log_line("arena distance_band=%d gap=%.3f center=%.3f radius=%.3f robot_radius=%.3f clinch=%d scores=%d/%d",
+                 snapshot.distance,
+                 snapshot.gap,
+                 snapshot.centerDistance,
+                 snapshot.arenaRadius,
+                 snapshot.robotRadius,
+                 snapshot.clinch,
+                 snapshot.leftScore,
+                 snapshot.rightScore);
+    cfa_log_line("commands left=%s target=%s right=%s target=%s ids=%d/%d",
+                 snapshot.leftCommand[0] != '\0' ? snapshot.leftCommand : "-",
+                 cfa_log_target_name(snapshot.leftTarget),
+                 snapshot.rightCommand[0] != '\0' ? snapshot.rightCommand : "-",
+                 cfa_log_target_name(snapshot.rightTarget),
+                 snapshot.leftCommandId,
+                 snapshot.rightCommandId);
+    cfa_log_line("crowd energy=%.3f cheer=%.3f clap=%.3f gasp=%.3f chant=%.3f chant_side=%d",
+                 snapshot.crowd.energy,
+                 snapshot.crowd.cheer,
+                 snapshot.crowd.clap,
+                 snapshot.crowd.gasp,
+                 snapshot.crowd.chant,
+                 snapshot.crowd.chantSide);
+    cfa_log_robot("left", snapshot.leftName, &snapshot.leftRobot,
+                  left_capsules, left_count);
+    cfa_log_robot("right", snapshot.rightName, &snapshot.rightRobot,
+                  right_capsules, right_count);
+    cfa_log_line("event %s", snapshot.event[0] != '\0' ? snapshot.event : "-");
+    cfa_log_flush();
+}
+
+void cfa_log_finish_bout(const CFABout *bout,
+                         double run_time_seconds,
+                         const char *reason)
+{
+    char message[256];
+
+    if (cfa_log_file == NULL) {
+        return;
+    }
+    snprintf(message, sizeof(message), "finish: %s",
+             reason != NULL && reason[0] != '\0' ? reason : "-");
+    cfa_log_action_line(message);
+    cfa_log_bout_frame(bout, "final", run_time_seconds, 0.0);
+    cfa_log_close();
+}
+
+const char *cfa_log_current_path(void)
+{
+    return cfa_log_path;
+}
+
+void cfa_log_close(void)
+{
+    if (cfa_log_file != NULL) {
+        cfa_log_flush();
+        fclose(cfa_log_file);
+    }
+    cfa_log_file = NULL;
+    cfa_log_fd = -1;
+}
+
 CFABout *cfa_bout_create_from_files(const char *left_path,
                                     const char *right_path,
                                     uint32_t seed,
@@ -7152,6 +7782,7 @@ static void print_usage(const char *argv0)
     printf("  %s left.cfos right.cfos [seed]\n", argv0);
     printf("  %s --tournament seed command_set_a.cfos command_set_b.cfos [...]\n",
            argv0);
+    printf("  %s --smoke-log left.cfos right.cfos [seed] [turns]\n", argv0);
     printf("  %s --list-moves\n", argv0);
 }
 
@@ -7278,12 +7909,152 @@ static int run_tournament(int argc, char **argv)
     return 0;
 }
 
+static int run_cli_bout_from_files(const char *left_path,
+                                   const char *right_path,
+                                   uint32_t seed)
+{
+    CFABout *bout;
+    CFATurnSnapshot snapshot;
+    char error[256];
+    int logged;
+
+    bout = cfa_bout_create_from_files(left_path, right_path, seed,
+                                      error, sizeof(error));
+    if (bout == NULL) {
+        fprintf(stderr, "%s\n", error);
+        return 1;
+    }
+    cfa_bout_set_turn_limit(bout, MAX_TURNS);
+    logged = cfa_log_begin_bout(bout, left_path, right_path, "cfa_cli",
+                                MAX_TURNS, CFA_BOUT_TIME_LIMIT_SECONDS, 1.0);
+    cfa_bout_get_snapshot(bout, &snapshot);
+
+    printf("Cage Fighting Robot OS physical simulation\n");
+    printf("Seed %u | R1 %s | R2 %s\n", bout->seed, bout->left.name,
+           bout->right.name);
+    printf("Arena radius %.2fm | robot hard radius %.2fm | no-overlap contact solver enabled\n\n",
+           ARENA_RADIUS_M, ROBOT_RADIUS_M);
+
+    do {
+        if (!cfa_bout_step(bout, &snapshot)) {
+            break;
+        }
+        if (logged) {
+            cfa_log_bout_frame(bout, "turn",
+                               snapshot.turn * CFA_SECONDS_PER_TURN, 1.0);
+        }
+        printf("T%03d gap%.2f center%.2f C%d | R1 %-10s R2 %-10s | %s\n",
+               snapshot.turn,
+               snapshot.gap,
+               snapshot.centerDistance,
+               snapshot.clinch,
+               snapshot.leftCommand[0] != '\0' ? snapshot.leftCommand : "-",
+               snapshot.rightCommand[0] != '\0' ? snapshot.rightCommand : "-",
+               snapshot.event);
+        if (snapshot.turn == 1 || snapshot.turn % 8 == 0 ||
+            bout->fight.robot[0].defeated || bout->fight.robot[1].defeated) {
+            print_status("  R1", &bout->fight.robot[0]);
+            print_status("  R2", &bout->fight.robot[1]);
+            print_crowd_status(&bout->fight.crowd);
+        }
+    } while (!snapshot.finished);
+
+    {
+        const char *winner_name = "DRAW";
+        double run_time = snapshot.turn * CFA_SECONDS_PER_TURN;
+
+        if (snapshot.winner == 0) {
+            winner_name = bout->left.name;
+        } else if (snapshot.winner == 1) {
+            winner_name = bout->right.name;
+        }
+
+        print_final_status(&bout->left, &bout->right, &bout->fight);
+        print_crowd_status(&bout->fight.crowd);
+        printf("\nResult: %s at T%03d by %s\n",
+               winner_name, snapshot.turn,
+               snapshot.resultMethod[0] != '\0' ?
+                    snapshot.resultMethod : "unknown");
+        printf("Scores: R1 %d | R2 %d\n",
+               snapshot.leftScore, snapshot.rightScore);
+        if (logged) {
+            cfa_log_finish_bout(bout, run_time, snapshot.resultMethod);
+        }
+    }
+
+    cfa_bout_destroy(bout);
+    return 0;
+}
+
+static int run_log_smoke(int argc, char **argv)
+{
+    CFABout *bout;
+    CFATurnSnapshot snapshot;
+    char error[256];
+    const char *left_path;
+    const char *right_path;
+    const char *log_path;
+    uint32_t seed = 42;
+    int turns = 3;
+    int i;
+
+    if (argc < 4) {
+        print_usage(argv[0]);
+        return 1;
+    }
+
+    left_path = argv[2];
+    right_path = argv[3];
+    if (argc >= 5) {
+        seed = (uint32_t)strtoul(argv[4], NULL, 10);
+        if (seed == 0) {
+            seed = 1;
+        }
+    }
+    if (argc >= 6) {
+        turns = atoi(argv[5]);
+        if (turns <= 0) {
+            turns = 3;
+        }
+    }
+
+    bout = cfa_bout_create_from_files(left_path, right_path, seed,
+                                      error, sizeof(error));
+    if (bout == NULL) {
+        fprintf(stderr, "%s\n", error);
+        return 1;
+    }
+    cfa_bout_set_turn_limit(bout, turns);
+    if (!cfa_log_begin_bout(bout, left_path, right_path, "cfa_smoke_log",
+                            turns, turns * CFA_SECONDS_PER_TURN, 1.0)) {
+        cfa_bout_destroy(bout);
+        return 1;
+    }
+
+    for (i = 0; i < turns; i++) {
+        if (!cfa_bout_step(bout, &snapshot)) {
+            break;
+        }
+        cfa_log_bout_frame(bout, "smoke_turn",
+                           snapshot.turn * CFA_SECONDS_PER_TURN, 1.0);
+        if (snapshot.finished) {
+            break;
+        }
+    }
+
+    log_path = cfa_log_current_path();
+    cfa_log_finish_bout(bout, snapshot.turn * CFA_SECONDS_PER_TURN,
+                        "smoke log complete");
+    printf("%s\n", log_path != NULL ? log_path : "");
+    cfa_bout_destroy(bout);
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
-    Program left;
-    Program right;
-    char error[256];
     uint32_t seed = 42;
+
+    cfa_log_install_crash_handlers();
 
     if (argc < 2) {
         print_usage(argv[0]);
@@ -7293,6 +8064,10 @@ int main(int argc, char **argv)
     if (equals_ci(argv[1], "--list-moves")) {
         print_moves();
         return 0;
+    }
+
+    if (equals_ci(argv[1], "--smoke-log")) {
+        return run_log_smoke(argc, argv);
     }
 
     if (equals_ci(argv[1], "--tournament")) {
@@ -7311,16 +8086,6 @@ int main(int argc, char **argv)
         }
     }
 
-    if (!load_program(argv[1], &left, error, sizeof(error))) {
-        fprintf(stderr, "%s\n", error);
-        return 1;
-    }
-    if (!load_program(argv[2], &right, error, sizeof(error))) {
-        fprintf(stderr, "%s\n", error);
-        return 1;
-    }
-
-    (void)run_bout(&left, &right, seed, 1);
-    return 0;
+    return run_cli_bout_from_files(argv[1], argv[2], seed);
 }
 #endif
